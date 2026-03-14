@@ -2,11 +2,9 @@
 실행 방법:
     python train.py --seed 42
     
-
 Returns:
     _type_: _description_
 """
-
 
 import os
 import time
@@ -81,17 +79,21 @@ class AlphaZeroTrainer:
         self.memory = deque(maxlen=10000) 
         
         self.best_logical_error = 1.0 
+        
+        # 🌟 가장 성능이 좋았던 Hx, Hz를 메모리에 기억해두기 위한 변수
+        self.best_Hx = None
+        self.best_Hz = None
 
     def _console_print(self, message):
         time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
         print(f"{time_str} [INFO] {message}")
 
-    def execute_episode(self):
+    # 🌟 어떤 에포크/에피소드인지 추적하기 위해 파라미터 추가
+    def execute_episode(self, current_epoch, current_ep):
         state, info = self.env.reset()
         episode_memory = []
         
         while True:
-            # 🌟 1. 종료 조건 확인: 더 이상 둘 곳이 없으면 "제출(Submit)"을 위해 루프를 빠져나감
             if np.sum(info['action_mask']) == 0:
                 break
             
@@ -103,22 +105,20 @@ class AlphaZeroTrainer:
             action = np.random.choice(len(action_probs), p=action_probs)
             state, step_reward, terminated, truncated, info = self.env.step(action)
             
-            # 🌟 2. 환경 자체 규칙에 의해 게임이 끝난 경우에도 "제출(Submit)"
             if terminated or truncated:
                 break
                 
-        # --- 🌟 3. 최종 심판 (루프 바깥으로 꺼낸 평가 로직) ---
+        # --- 최종 심판 ---
         Hx, Hz = state[0], state[1]
         dot_product = np.dot(Hx, Hz.T)
         
         violations = np.sum((dot_product % 2) != 0)
         
-        # 고립된(버려진) 큐비트 검사 (AI의 꼬리 자르기 꼼수 방지)
-        orphaned_x = np.sum(np.sum(Hx, axis=0) == 0) # X 감시를 안 받는 큐비트 수
-        orphaned_z = np.sum(np.sum(Hz, axis=0) == 0) # Z 감시를 안 받는 큐비트 수
+        orphaned_x = np.sum(np.sum(Hx, axis=0) == 0)
+        orphaned_z = np.sum(np.sum(Hz, axis=0) == 0)
         total_orphans = orphaned_x + orphaned_z
         
-        steps = len(episode_memory) # 몇 턴이나 진행했는지 기록
+        steps = len(episode_memory) 
         
         if violations > 0 or total_orphans > 0:
             max_violations = self.num_stabilizers * self.num_stabilizers
@@ -126,7 +126,6 @@ class AlphaZeroTrainer:
             final_value = -1.0 * penalty_score
             self.logger.info(f"⚠️ [제출 완료] {steps}턴 진행 -> 위반 {violations}개, 버려진 큐비트 {total_orphans}개 (가치: {final_value:.2f})")
         else:
-            # 모든 물리적 규칙을 만족했을 때만 진짜 에러율 채점
             logical_error = self.evaluator.evaluate_logical_error_rate(Hx, Hz)
             baseline_error = 0.01
             
@@ -140,19 +139,23 @@ class AlphaZeroTrainer:
             
             if logical_error < self.best_logical_error and logical_error < baseline_error:
                 self.best_logical_error = logical_error
-                msg = f"🏆 [신기록 달성] 새로운 최고 성능 코드 발견! 에러율: {logical_error:.4f}"
+                self.best_Hx = Hx.copy() # 최고 기록 메모리에 갱신
+                self.best_Hz = Hz.copy()
+                
+                msg = f"🏆 [신기록 달성] 에러율: {logical_error:.4f} (위치: Epoch {current_epoch+1}, Ep {current_ep+1})"
                 self.logger.info(msg)
                 self._console_print(msg)
                 
-                # 최고 성능 코드 이미지를 타임스탬프 폴더 내부의 'best_codes' 하위 폴더에 저장
-                save_dir = os.path.join(self.run_dir, "best_codes")
+                # 🌟 1. 덮어쓰지 않고 진화 히스토리를 저장하는 개별 폴더 생성
+                folder_name = f"best_codes_epc{current_epoch+1}_ep{current_ep+1}"
+                save_dir = os.path.join(self.run_dir, folder_name)
                 os.makedirs(save_dir, exist_ok=True)
+                
                 np.save(os.path.join(save_dir, "best_Hx.npy"), Hx)
                 np.save(os.path.join(save_dir, "best_Hz.npy"), Hz)
                 draw_surface_code_style(Hx, Hz, save_dir, filename_prefix="best_tanner_graph")
                 self.evaluator.save_circuit_diagram(Hx, Hz, save_dir, filename="best_circuit.svg")
         
-        # 🌟 4. 도출된 최종 점수(final_value)를 에피소드 메모리의 모든 턴에 소급 적용
         for step_data in episode_memory:
             step_data.append(final_value)
             
@@ -190,7 +193,8 @@ class AlphaZeroTrainer:
             self._console_print(epoch_msg)
             
             for ep in range(self.episodes):
-                episode_data = self.execute_episode()
+                # 🌟 에포크와 에피소드 인덱스를 넘겨줍니다
+                episode_data = self.execute_episode(epoch, ep)
                 self.memory.extend(episode_data)
                 
             losses = None
@@ -202,9 +206,26 @@ class AlphaZeroTrainer:
                 self.logger.info(loss_msg)
                 self._console_print(loss_msg)
                 
-        # 최종 모델(.pth)을 타임스탬프 폴더 내부에 깔끔하게 저장
+        # 최종 모델(.pth)을 타임스탬프 폴더 내부에 저장
         model_path = os.path.join(self.run_dir, "qec_alphazero_model.pth")
         torch.save(self.network.state_dict(), model_path)
+        
+        # 🌟 2. 모든 학습 종료 후, 가장 좋았던 1등 코드를 'final_codes'에 복제/저장
+        if self.best_Hx is not None and self.best_Hz is not None:
+            final_dir = os.path.join(self.run_dir, "final_codes")
+            os.makedirs(final_dir, exist_ok=True)
+            
+            np.save(os.path.join(final_dir, "final_Hx.npy"), self.best_Hx)
+            np.save(os.path.join(final_dir, "final_Hz.npy"), self.best_Hz)
+            draw_surface_code_style(self.best_Hx, self.best_Hz, final_dir, filename_prefix="final_tanner_graph")
+            
+            # 마지막으로 가장 성능 좋았던 코드를 다시 한 번 평가해서 회로도 SVG도 캐싱/저장합니다
+            self.evaluator.evaluate_logical_error_rate(self.best_Hx, self.best_Hz)
+            self.evaluator.save_circuit_diagram(self.best_Hx, self.best_Hz, final_dir, filename="final_circuit.svg")
+            
+            final_msg = f"🌟 [최종 결과] 가장 뛰어났던 코드가 'final_codes' 폴더에 최종 정리되었습니다. (최종 에러율: {self.best_logical_error:.4f})"
+            self.logger.info(final_msg)
+            self._console_print(final_msg)
         
         end_msg = f"🎉 학습 완료! 최고 에러율: {self.best_logical_error:.4f} \n저장 위치: {model_path}"
         self.logger.info(end_msg)
@@ -212,17 +233,10 @@ class AlphaZeroTrainer:
 
 
 if __name__ == "__main__":
-    # 🌟 터미널에서 입력을 받기 위한 파서(Parser) 설정
     parser = argparse.ArgumentParser(description="AlphaZero 기반 양자 오류 정정 코드 탐색기")
-    
-    # --seed 인자를 필수로 설정
-    parser.add_argument('--seed', type=int, required=True, 
-                        help="실험의 완벽한 재현성을 위한 난수 시드값 (필수 입력)")
-    
-    # 터미널에서 입력한 값을 파싱
+    parser.add_argument('--seed', type=int, required=True, help="실험의 완벽한 재현성을 위한 난수 시드값 (필수 입력)")
     args = parser.parse_args()
     
-    # 입력받은 시드값 적용
     set_seed(args.seed)
     
     trainer = AlphaZeroTrainer()
