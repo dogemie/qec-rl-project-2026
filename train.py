@@ -1,9 +1,6 @@
 """_summary_
-실행 방법:
-    python train.py --seed 42
-    
-Returns:
-    _type_: _description_
+실행 방법 1 (시드 지정): python train.py --seed 42
+실행 방법 2 (시드 자동): python train.py
 """
 
 import os
@@ -26,19 +23,13 @@ from sim.stim_interface import StimEvaluator
 from utils.viz import draw_surface_code_style 
 
 def set_seed(seed):
-    """
-    강화학습 실험의 완벽한 재현성(Reproducibility)을 보장하기 위해
-    모든 라이브러리의 난수 생성 시드(Seed)를 하나로 고정합니다.
-    """
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed) # 멀티 GPU 환경일 경우 모두 적용
-        
-        # cuDNN 연산의 결정론적(Deterministic) 수행을 강제하여 완벽한 재현 보장
+        torch.cuda.manual_seed_all(seed) 
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
         
@@ -46,15 +37,17 @@ def set_seed(seed):
 
 
 class AlphaZeroTrainer:
-    def __init__(self):
+    def __init__(self, seed):
+        self.seed = seed
         self.timestamp = datetime.now().strftime("%y%m%d_%H%M")
         
-        # 1. 모든 결과물이 저장될 최상위 타임스탬프 폴더 생성 (예: outputs/260314_1645)
-        self.run_dir = os.path.join("outputs", self.timestamp)
+        # 🌟 폴더명에 시드값 추가 (예: 260314_1645_s77)
+        self.run_name = f"{self.timestamp}_s{self.seed}"
+        self.run_dir = os.path.join("outputs", self.run_name)
         os.makedirs(self.run_dir, exist_ok=True)
         
         os.makedirs("logging", exist_ok=True)
-        log_file = os.path.join("logging", f"train_log_{self.timestamp}.txt")
+        log_file = os.path.join("logging", f"train_log_{self.run_name}.txt")
         
         logging.basicConfig(
             level=logging.INFO,
@@ -79,8 +72,6 @@ class AlphaZeroTrainer:
         self.memory = deque(maxlen=10000) 
         
         self.best_logical_error = 1.0 
-        
-        # 🌟 가장 성능이 좋았던 Hx, Hz를 메모리에 기억해두기 위한 변수
         self.best_Hx = None
         self.best_Hz = None
 
@@ -88,7 +79,6 @@ class AlphaZeroTrainer:
         time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
         print(f"{time_str} [INFO] {message}")
 
-    # 🌟 어떤 에포크/에피소드인지 추적하기 위해 파라미터 추가
     def execute_episode(self, current_epoch, current_ep):
         state, info = self.env.reset()
         episode_memory = []
@@ -108,7 +98,6 @@ class AlphaZeroTrainer:
             if terminated or truncated:
                 break
                 
-        # --- 최종 심판 ---
         Hx, Hz = state[0], state[1]
         dot_product = np.dot(Hx, Hz.T)
         
@@ -134,19 +123,28 @@ class AlphaZeroTrainer:
             else:
                 improvement = (baseline_error - logical_error) / baseline_error
                 final_value = np.clip(improvement, 0.1, 1.0) 
+                
+                # 🌟 대칭성 보너스 (Symmetry Bonus) 적용
+                # Hx와 Hz의 행(Row)을 정렬하여 순서에 상관없이 구성이 완벽히 동일한지 체크
+                hx_sorted = np.sort(Hx, axis=0)
+                hz_sorted = np.sort(Hz, axis=0)
+                is_symmetric = np.array_equal(hx_sorted, hz_sorted)
+                
+                if is_symmetric:
+                    final_value = min(1.0, final_value + 0.3) # 대칭일 경우 0.3점 대폭 추가!
+                    self.logger.info("💎 [대칭성 보너스 획득] 완벽한 데칼코마니 구조 달성!")
             
             self.logger.info(f"✨ [기적의 코드] {steps}턴 진행! 완벽한 규칙 통과! 논리 에러율: {logical_error:.4f} -> 가치: {final_value:.2f}")
             
             if logical_error < self.best_logical_error and logical_error < baseline_error:
                 self.best_logical_error = logical_error
-                self.best_Hx = Hx.copy() # 최고 기록 메모리에 갱신
+                self.best_Hx = Hx.copy()
                 self.best_Hz = Hz.copy()
                 
                 msg = f"🏆 [신기록 달성] 에러율: {logical_error:.4f} (위치: Epoch {current_epoch+1}, Ep {current_ep+1})"
                 self.logger.info(msg)
                 self._console_print(msg)
                 
-                # 🌟 1. 덮어쓰지 않고 진화 히스토리를 저장하는 개별 폴더 생성
                 folder_name = f"best_codes_epc{current_epoch+1}_ep{current_ep+1}"
                 save_dir = os.path.join(self.run_dir, folder_name)
                 os.makedirs(save_dir, exist_ok=True)
@@ -193,7 +191,6 @@ class AlphaZeroTrainer:
             self._console_print(epoch_msg)
             
             for ep in range(self.episodes):
-                # 🌟 에포크와 에피소드 인덱스를 넘겨줍니다
                 episode_data = self.execute_episode(epoch, ep)
                 self.memory.extend(episode_data)
                 
@@ -206,11 +203,9 @@ class AlphaZeroTrainer:
                 self.logger.info(loss_msg)
                 self._console_print(loss_msg)
                 
-        # 최종 모델(.pth)을 타임스탬프 폴더 내부에 저장
-        model_path = os.path.join(self.run_dir, "qec_alphazero_model.pth")
+        model_path = os.path.join(self.run_dir, f"qec_alphazero_model_s{self.seed}.pth")
         torch.save(self.network.state_dict(), model_path)
         
-        # 🌟 2. 모든 학습 종료 후, 가장 좋았던 1등 코드를 'final_codes'에 복제/저장
         if self.best_Hx is not None and self.best_Hz is not None:
             final_dir = os.path.join(self.run_dir, "final_codes")
             os.makedirs(final_dir, exist_ok=True)
@@ -219,7 +214,6 @@ class AlphaZeroTrainer:
             np.save(os.path.join(final_dir, "final_Hz.npy"), self.best_Hz)
             draw_surface_code_style(self.best_Hx, self.best_Hz, final_dir, filename_prefix="final_tanner_graph")
             
-            # 마지막으로 가장 성능 좋았던 코드를 다시 한 번 평가해서 회로도 SVG도 캐싱/저장합니다
             self.evaluator.evaluate_logical_error_rate(self.best_Hx, self.best_Hz)
             self.evaluator.save_circuit_diagram(self.best_Hx, self.best_Hz, final_dir, filename="final_circuit.svg")
             
@@ -234,10 +228,37 @@ class AlphaZeroTrainer:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AlphaZero 기반 양자 오류 정정 코드 탐색기")
-    parser.add_argument('--seed', type=int, required=True, help="실험의 완벽한 재현성을 위한 난수 시드값 (필수 입력)")
+    
+    # 🌟 seed 인자를 선택사항(default=None)으로 변경
+    parser.add_argument('--seed', type=int, default=None, 
+                        help="실험의 완벽한 재현성을 위한 난수 시드값 (입력하지 않으면 자동 할당)")
     args = parser.parse_args()
     
-    set_seed(args.seed)
+    # 🌟 outputs 폴더를 뒤져서 이미 사용한 시드 목록 확보
+    used_seeds = set()
+    if os.path.exists("outputs"):
+        for folder_name in os.listdir("outputs"):
+            if "_s" in folder_name:
+                try:
+                    # '260314_1916_s77' 형태에서 마지막 77 추출
+                    seed_val = int(folder_name.split("_s")[-1])
+                    used_seeds.add(seed_val)
+                except ValueError:
+                    continue
     
-    trainer = AlphaZeroTrainer()
+    # 시드가 입력되지 않았다면 1~99999 중 사용하지 않은 시드 자동 뽑기
+    if args.seed is None:
+        available_seeds = list(set(range(1, 100000)) - used_seeds)
+        if not available_seeds:
+            final_seed = 42 # 만약 모든 시드가 꽉 찼다면 기본값
+        else:
+            final_seed = random.choice(available_seeds)
+        print(f"🎲 시드가 입력되지 않아, 사용되지 않은 시드 {final_seed}번을 자동 할당합니다.")
+    else:
+        final_seed = args.seed
+    
+    set_seed(final_seed)
+    
+    # Trainer에 시드값을 넘겨줌
+    trainer = AlphaZeroTrainer(seed=final_seed)
     trainer.run()
