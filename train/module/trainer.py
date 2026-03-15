@@ -23,6 +23,7 @@ from agent.mcts import MCTS
 from sim.stim_interface import StimEvaluator
 from utils.viz import draw_surface_code_style 
 from utils.viz_fano import draw_fano_steane_graph
+from utils.viz_2d_grid import draw_2d_grid_layout
 
 class AlphaZeroTrainer:
     def __init__(self, seed):
@@ -216,6 +217,10 @@ class AlphaZeroTrainer:
                 # 🌟 Fano 평면 기반의 비교 이미지 자동 생성 및 저장!
                 fano_save_path = os.path.join(save_dir, "fano_comparison.png")
                 draw_fano_steane_graph(hx_save_path, hz_save_path, save_path=fano_save_path, show_plot=False)
+                
+                # 🌟 하드웨어 친화적 2D Grid 레이아웃 자동 생성 및 저장!
+                grid_save_path = os.path.join(save_dir, "hardware_2d_grid.png")
+                draw_2d_grid_layout(hx_save_path, hz_save_path, save_path=grid_save_path, show_plot=False)
                 
                 # np.save(os.path.join(save_dir, "best_Hx.npy"), Hx)
                 # np.save(os.path.join(save_dir, "best_Hz.npy"), Hz)
