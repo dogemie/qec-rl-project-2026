@@ -163,6 +163,12 @@ class StimEvaluator:
         if hasattr(self, '_last_valid_circuit') and self._last_valid_circuit is not None:
             file_path = os.path.join(save_dir, filename)
             
+            # Stim에서 SVG 문자열을 뽑아냄
+            svg_content = self._last_valid_circuit.diagram("timeline-svg")
+            
+            # 다크 모드 환경에서도 잘 보이도록 최상단 <svg> 태그에 흰색 배경 스타일 강제 주입
+            svg_content = str(svg_content).replace('<svg ', '<svg style="background-color:white;" ')
+            
             # timeline-svg 포맷으로 회로도를 생성하여 저장
             with open(file_path, "w") as f:
                 print(self._last_valid_circuit.diagram("timeline-svg"), file=f)
