@@ -124,11 +124,15 @@ class StimEvaluator:
         
         return error_rate, circuit
 
-    def evaluate_logical_error_rate(self, Hx, Hz, num_shots=10000):
+    def evaluate_logical_error_rate(self, Hx, Hz, noise_rate=None, num_shots=10000):
         """
         [최종 채점] 생성된 회로가 X 에러와 Z 에러를 모두 방어하는지 엄격하게 종합 채점합니다.
         가장 취약한 부분의 에러율을 최종 점수로 반환하여 AI의 꼼수를 차단합니다.
         """
+        # 파라미터로 받은 노이즈가 없으면 기본값(self.p) 사용
+        if noise_rate is None:
+            noise_rate = self.p
+            
         Lx, Lz = self._find_logical_operators(Hx, Hz)
         
         if Lx is None or Lz is None:
@@ -137,12 +141,12 @@ class StimEvaluator:
 
         # 테스트 1: Z 에러 방어력 검증 (Hx로 측정, 논리적 Z 보존 여부 확인)
         z_error_rate, z_circuit = self._simulate_code_capacity(
-            H_measure=Hx, L_obs=Lz, noise_prob=self.p, is_x_basis=False, num_shots=num_shots
+            H_measure=Hx, L_obs=Lz, noise_prob=noise_rate, is_x_basis=False, num_shots=num_shots
         )
         
         # 테스트 2: X 에러 방어력 검증 (Hz로 측정, 논리적 X 보존 여부 확인)
         x_error_rate, x_circuit = self._simulate_code_capacity(
-            H_measure=Hz, L_obs=Lx, noise_prob=self.p, is_x_basis=True, num_shots=num_shots
+            H_measure=Hz, L_obs=Lx, noise_prob=noise_rate, is_x_basis=True, num_shots=num_shots
         )
 
         # 🌟 가장 취약한 부분을 최종 에러율로 산정 (방패의 양면이 모두 튼튼해야 함)
