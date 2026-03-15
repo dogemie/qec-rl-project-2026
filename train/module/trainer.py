@@ -57,7 +57,7 @@ class AlphaZeroTrainer:
         
         self.network = QECNet(self.num_qubits, self.num_stabilizers).to(self.device)
         self.optimizer = optim.Adam(self.network.parameters(), lr=0.001, weight_decay=1e-4)
-        self.lr_scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=30, gamma=0.5)
+        # self.lr_scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=30, gamma=0.5)
         self.memory = deque(maxlen=10000) 
         
         self.best_logical_error = 1.0 
@@ -183,7 +183,7 @@ class AlphaZeroTrainer:
             losses = None
             for _ in range(20): 
                 losses = self.train_network()
-            self.lr_scheduler.step()
+            # self.lr_scheduler.step()
                 
             if losses:
                 loss_msg = f"📈 Loss - Total: {losses[0]:.4f} | Value: {losses[1]:.4f} | Policy: {losses[2]:.4f}"
