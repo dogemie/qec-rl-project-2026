@@ -71,7 +71,7 @@ class AlphaZeroTrainer:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         self.network = QECNet(self.num_qubits, self.num_stabilizers).to(self.device)
-        self.optimizer = optim.Adam(self.network.parameters(), lr=0.001, weight_decay=1e-4)
+        self.optimizer = optim.AdamW(self.network.parameters(), lr=0.001, weight_decay=1e-4)
         # self.lr_scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=30, gamma=0.5)
         self.memory = deque(maxlen=10000) 
         
