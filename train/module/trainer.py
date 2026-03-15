@@ -1,12 +1,7 @@
-"""_summary_
-실행 방법 1 (시드 지정): python train.py --seed 42
-실행 방법 2 (시드 자동): python train.py
-"""
-
 import os
+import sys
 import time
 import logging
-import argparse
 from datetime import datetime
 import torch
 import torch.optim as optim
@@ -15,39 +10,32 @@ import numpy as np
 from collections import deque
 import random
 
-# 우리가 만든 커스텀 모듈들
+# 🌟 1. 프로젝트 최상위 루트 경로를 절대 경로로 계산하여 파이썬 시스템 경로에 추가
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if PROJECT_ROOT not in sys.path:
+    sys.path.append(PROJECT_ROOT)
+
+# 이제 루트 경로에 있는 커스텀 모듈들을 정상적으로 임포트할 수 있습니다.
 from envs.qec_env import QECEnv
 from agent.network import QECNet
 from agent.mcts import MCTS
 from sim.stim_interface import StimEvaluator
 from utils.viz import draw_surface_code_style 
 
-def set_seed(seed):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed) 
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-        
-    print(f"🌱 [Seed Fix] 모든 난수 시드가 {seed}로 고정되었습니다. (재현성 보장)")
-
-
 class AlphaZeroTrainer:
     def __init__(self, seed):
         self.seed = seed
         self.timestamp = datetime.now().strftime("%y%m%d_%H%M")
         
-        # 🌟 폴더명에 시드값 추가 (예: 260314_1645_s77)
         self.run_name = f"{self.timestamp}_s{self.seed}"
-        self.run_dir = os.path.join("outputs", self.run_name)
+        
+        # 🌟 2. 저장 폴더 경로도 PROJECT_ROOT를 기준으로 잡아줍니다.
+        self.run_dir = os.path.join(PROJECT_ROOT, "outputs", self.run_name)
         os.makedirs(self.run_dir, exist_ok=True)
         
-        os.makedirs("logging", exist_ok=True)
-        log_file = os.path.join("logging", f"train_log_{self.run_name}.txt")
+        log_dir = os.path.join(PROJECT_ROOT, "logging")
+        os.makedirs(log_dir, exist_ok=True)
+        log_file = os.path.join(log_dir, f"train_log_{self.run_name}.txt")
         
         logging.basicConfig(
             level=logging.INFO,
@@ -125,13 +113,10 @@ class AlphaZeroTrainer:
                 improvement = (baseline_error - logical_error) / baseline_error
                 base_value = np.clip(improvement, 0.1, 1.0) 
                 
-                # 🌟 수정 1: 인간의 편향인 대칭성 보너스 제거
-                # 🌟 수정 2: 보편적 진리인 희소성(Sparsity/LDPC) 보상 적용
                 total_elements = Hx.size + Hz.size
                 total_ones = np.sum(Hx) + np.sum(Hz)
-                sparsity_ratio = 1.0 - (total_ones / total_elements) # 1이 적을수록 1.0에 가까워짐
+                sparsity_ratio = 1.0 - (total_ones / total_elements) 
                 
-                # 에러율 개선도(80%) + 희소성(20%) 가중합 (비율은 조절 가능합니다)
                 final_value = (base_value * 0.8) + (sparsity_ratio * 0.2)
                 self.logger.info(f"💎 [희소성 보상] 선 밀도 최소화! Sparsity: {sparsity_ratio:.2f}")
             
@@ -219,48 +204,10 @@ class AlphaZeroTrainer:
             self.evaluator.evaluate_logical_error_rate(self.best_Hx, self.best_Hz)
             self.evaluator.save_circuit_diagram(self.best_Hx, self.best_Hz, final_dir, filename="final_circuit.svg")
             
-            final_msg = f"🌟 [최종 결과] 가장 뛰어났던 코드가 'final_codes' 폴더에 최종 정리되었습니다. (최종 에러율: {self.best_logical_error:.4f})"
+            final_msg = f"🌟 [최종 결과] 가장 뛰어났던 코드가 'final_codes' 폴더에 정리되었습니다. (최종 에러율: {self.best_logical_error:.4f})"
             self.logger.info(final_msg)
             self._console_print(final_msg)
         
         end_msg = f"🎉 학습 완료! 최고 에러율: {self.best_logical_error:.4f} \n저장 위치: {model_path}"
         self.logger.info(end_msg)
         self._console_print(end_msg)
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="AlphaZero 기반 양자 오류 정정 코드 탐색기")
-    
-    # 🌟 seed 인자를 선택사항(default=None)으로 변경
-    parser.add_argument('--seed', type=int, default=None, 
-                        help="실험의 완벽한 재현성을 위한 난수 시드값 (입력하지 않으면 자동 할당)")
-    args = parser.parse_args()
-    
-    # 🌟 outputs 폴더를 뒤져서 이미 사용한 시드 목록 확보
-    used_seeds = set()
-    if os.path.exists("outputs"):
-        for folder_name in os.listdir("outputs"):
-            if "_s" in folder_name:
-                try:
-                    # '260314_1916_s77' 형태에서 마지막 77 추출
-                    seed_val = int(folder_name.split("_s")[-1])
-                    used_seeds.add(seed_val)
-                except ValueError:
-                    continue
-    
-    # 시드가 입력되지 않았다면 1~99999 중 사용하지 않은 시드 자동 뽑기
-    if args.seed is None:
-        available_seeds = list(set(range(1, 100000)) - used_seeds)
-        if not available_seeds:
-            final_seed = 42 # 만약 모든 시드가 꽉 찼다면 기본값
-        else:
-            final_seed = random.choice(available_seeds)
-        print(f"🎲 시드가 입력되지 않아, 사용되지 않은 시드 {final_seed}번을 자동 할당합니다.")
-    else:
-        final_seed = args.seed
-    
-    set_seed(final_seed)
-    
-    # Trainer에 시드값을 넘겨줌
-    trainer = AlphaZeroTrainer(seed=final_seed)
-    trainer.run()
