@@ -122,17 +122,17 @@ class AlphaZeroTrainer:
                 final_value = 0.0 
             else:
                 improvement = (baseline_error - logical_error) / baseline_error
-                final_value = np.clip(improvement, 0.1, 1.0) 
+                base_value = np.clip(improvement, 0.1, 1.0) 
                 
-                # 🌟 대칭성 보너스 (Symmetry Bonus) 적용
-                # Hx와 Hz의 행(Row)을 정렬하여 순서에 상관없이 구성이 완벽히 동일한지 체크
-                hx_sorted = np.sort(Hx, axis=0)
-                hz_sorted = np.sort(Hz, axis=0)
-                is_symmetric = np.array_equal(hx_sorted, hz_sorted)
+                # 🌟 수정 1: 인간의 편향인 대칭성 보너스 제거
+                # 🌟 수정 2: 보편적 진리인 희소성(Sparsity/LDPC) 보상 적용
+                total_elements = Hx.size + Hz.size
+                total_ones = np.sum(Hx) + np.sum(Hz)
+                sparsity_ratio = 1.0 - (total_ones / total_elements) # 1이 적을수록 1.0에 가까워짐
                 
-                if is_symmetric:
-                    final_value = min(1.0, final_value + 0.3) # 대칭일 경우 0.3점 대폭 추가!
-                    self.logger.info("💎 [대칭성 보너스 획득] 완벽한 데칼코마니 구조 달성!")
+                # 에러율 개선도(80%) + 희소성(20%) 가중합 (비율은 조절 가능합니다)
+                final_value = (base_value * 0.8) + (sparsity_ratio * 0.2)
+                self.logger.info(f"💎 [희소성 보상] 선 밀도 최소화! Sparsity: {sparsity_ratio:.2f}")
             
             self.logger.info(f"✨ [기적의 코드] {steps}턴 진행! 완벽한 규칙 통과! 논리 에러율: {logical_error:.4f} -> 가치: {final_value:.2f}")
             
