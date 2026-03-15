@@ -71,9 +71,27 @@ class AlphaZeroTrainer:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         self.network = QECNet(self.num_qubits, self.num_stabilizers).to(self.device)
-        self.optimizer = optim.AdamW(self.network.parameters(), lr=0.001, weight_decay=1e-4)
-        # self.lr_scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=30, gamma=0.5)
-        self.memory = deque(maxlen=10000) 
+        
+        # 🌟 1. 동적 가중치(Uncertainty Weighting)를 위한 학습 가능한 파라미터 생성
+        # 초기값은 0으로 시작 (즉, 가중치 exp(0) = 1.0 에서 시작)
+        self.log_var_v = torch.zeros(1, requires_grad=True, device=self.device)
+        self.log_var_p = torch.zeros(1, requires_grad=True, device=self.device)
+
+        # 🌟 2. Optimizer에 신경망 파라미터와 동적 가중치 파라미터를 함께 등록 (AdamW 사용)
+        self.optimizer = optim.AdamW(
+            list(self.network.parameters()) + [self.log_var_v, self.log_var_p], 
+            lr=0.001, 
+            weight_decay=1e-4
+        )
+        
+        # 🌟 3. Cosine Annealing 스케줄러 도입
+        # T_max: 반주기(최소점까지 도달하는 에포크 수, 전체 에포크로 설정)
+        # eta_min: 가장 작아졌을 때의 학습률 (0.00001로 설정하여 미세조정)
+        self.lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer, T_max=self.epochs, eta_min=1e-5
+        )
+        
+        self.memory = deque(maxlen=10000)
         
         self.best_logical_error = 1.0 
         self.best_Hx = None
@@ -221,10 +239,19 @@ class AlphaZeroTrainer:
         self.optimizer.zero_grad()
         pred_probs, pred_values = self.network(states, masks)
         
+        # 1. 원본 Loss 계산
         value_loss = F.mse_loss(pred_values, target_values)
         policy_loss = -torch.sum(target_probs * torch.log(pred_probs + 1e-8)) / self.batch_size
         
-        total_loss = value_loss + policy_loss
+        # 🌟 2. 수학적 동적 가중치 적용 (Uncertainty Weighting)
+        # s 값이 커지면(불확실성이 높으면) 가중치 exp(-s)가 작아져 해당 Loss의 영향을 줄임
+        # 반대로 뒤에 + s 가 붙어있어 무한정 s가 커지는 것을 수학적 정규화로 방지
+        weighted_value_loss = torch.exp(-self.log_var_v) * value_loss + self.log_var_v
+        weighted_policy_loss = torch.exp(-self.log_var_p) * policy_loss + self.log_var_p
+        
+        # 최종 Loss 합산
+        total_loss = weighted_value_loss + weighted_policy_loss
+        
         total_loss.backward()
         self.optimizer.step()
         
@@ -245,13 +272,23 @@ class AlphaZeroTrainer:
                 self.memory.extend(episode_data)
                 
             losses = None
-            for _ in range(20): 
+            for _ in range(100): 
                 losses = self.train_network()
-            # self.lr_scheduler.step()
-            
+                
+            # 🌟 에포크가 끝날 때마다 코사인 스케줄러 1스텝 진행 (학습률 부드럽게 감소)
+            self.lr_scheduler.step()
+                
             if losses:
+                # 현재 학습률 확인
                 current_lr = self.optimizer.param_groups[0]['lr']
-                loss_msg = f"📈 Loss - Total: {losses[0]:.4f} | Value: {losses[1]:.4f} | Policy: {losses[2]:.4f} | LR: {current_lr:.5f}"
+                
+                # 신경망이 스스로 부여한 현재 가중치(Weight) 확인
+                weight_v = torch.exp(-self.log_var_v).item()
+                weight_p = torch.exp(-self.log_var_p).item()
+                
+                # 로그 메시지에 학습률과 동적 가중치 상황을 함께 출력
+                loss_msg = (f"📈 Loss - Tot: {losses[0]:.4f} | Val: {losses[1]:.4f} | Pol: {losses[2]:.4f} | "
+                            f"LR: {current_lr:.6f} | W_Val: {weight_v:.3f}, W_Pol: {weight_p:.3f}")
                 self.logger.info(loss_msg)
                 self._console_print(loss_msg)
                 
@@ -262,11 +299,7 @@ class AlphaZeroTrainer:
                                      self.best_logical_error, '-', '-', 
                                      self.best_cnots, self.best_distance])  
             
-            # if losses:
-            #     loss_msg = f"📈 Loss - Total: {losses[0]:.4f} | Value: {losses[1]:.4f} | Policy: {losses[2]:.4f}"
-            #     self.logger.info(loss_msg)
-            #     self._console_print(loss_msg)
-                
+            
         model_path = os.path.join(self.run_dir, f"qec_alphazero_model_s{self.seed}.pth")
         torch.save(self.network.state_dict(), model_path)
         
