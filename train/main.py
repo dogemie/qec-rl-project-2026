@@ -17,19 +17,8 @@ if PROJECT_ROOT not in sys.path:
 
 # 분리해 둔 모듈에서 클래스 임포트
 from train.module.trainer import AlphaZeroTrainer
+from utils.helpers import set_seed
 
-def set_seed(seed):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed) 
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-        
-    print(f"🌱 [Seed Fix] 모든 난수 시드가 {seed}로 고정되었습니다. (재현성 보장)")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AlphaZero 기반 양자 오류 정정 코드 탐색기")

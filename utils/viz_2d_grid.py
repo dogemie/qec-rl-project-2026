@@ -22,12 +22,32 @@ def draw_2d_grid_layout(hx_path, hz_path, save_path=None, show_plot=True):
     # AI가 훈련 시 사용한 것과 동일한 Auto-Grid 크기 계산
     grid_size = int(np.ceil(np.sqrt(total_nodes)))
 
-    # 인덱스를 2D 격자 좌표 (x, y)로 변환하는 함수
-    # y좌표는 위에서 아래로 내려오도록 마이너스(-) 처리
     def get_coord(index):
-        row = index // grid_size
-        col = index % grid_size
-        return (col, -row)
+        if not hasattr(get_coord, "mapping"):
+            mapping = {}
+            data_coords = []
+            stab_coords = []
+            
+            # 1. 격자를 돌면서 짝수/홀수 칸 분류 (체스판 형태)
+            for y in range(grid_size):
+                for x in range(grid_size):
+                    if (x + y) % 2 == 0:
+                        data_coords.append((x, -y)) # 짝수 칸
+                    else:
+                        stab_coords.append((x, -y)) # 홀수 칸
+                        
+            # 2. 인덱스에 좌표 할당 (Data Qubit은 짝수칸, Stabilizer는 홀수칸 우선 배치)
+            for i in range(total_nodes):
+                if i < num_qubits:
+                    # 데이터 큐비트
+                    mapping[i] = data_coords.pop(0) if data_coords else stab_coords.pop(0)
+                else:
+                    # 안정자 (X, Z)
+                    mapping[i] = stab_coords.pop(0) if stab_coords else data_coords.pop(0)
+                    
+            get_coord.mapping = mapping
+
+        return get_coord.mapping[index]
 
     fig, ax = plt.subplots(figsize=(10, 10))
     ax.set_aspect('equal')

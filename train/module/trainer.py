@@ -81,15 +81,15 @@ class AlphaZeroTrainer:
         # 🌟 2. Optimizer에 신경망 파라미터와 동적 가중치 파라미터를 함께 등록 (AdamW 사용)
         self.optimizer = optim.AdamW(
             list(self.network.parameters()) + [self.log_var_v, self.log_var_p], 
-            lr=0.001, 
+            lr=0.01, 
             weight_decay=1e-4
         )
         
         # 🌟 3. Cosine Annealing 스케줄러 도입
-        # T_max: 반주기(최소점까지 도달하는 에포크 수, 전체 에포크로 설정)
-        # eta_min: 가장 작아졌을 때의 학습률 (0.00001로 설정하여 미세조정)
-        self.lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer, T_max=self.epochs, eta_min=1e-5
+        # T_max: 반주기
+        # eta_min: 가장 작아졌을 때의 학습률
+        self.lr_scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            self.optimizer, T_0=25, T_mult=1, eta_min=1e-4
         )
         
         self.memory = deque(maxlen=10000)
@@ -248,11 +248,13 @@ class AlphaZeroTrainer:
         value_loss = F.mse_loss(pred_values, target_values)
         policy_loss = -torch.sum(target_probs * torch.log(pred_probs + 1e-8)) / self.batch_size
         
-        # 🌟 2. 수학적 동적 가중치 적용 (Uncertainty Weighting)
-        # s 값이 커지면(불확실성이 높으면) 가중치 exp(-s)가 작아져 해당 Loss의 영향을 줄임
-        # 반대로 뒤에 + s 가 붙어있어 무한정 s가 커지는 것을 수학적 정규화로 방지
-        weighted_value_loss = torch.exp(-self.log_var_v) * value_loss + self.log_var_v
-        weighted_policy_loss = torch.exp(-self.log_var_p) * policy_loss + self.log_var_p
+        # 2. 수정된 Clamping 적용 (Value 가중치가 더 강하게 개입할 수 있도록 공간 확보)
+        log_var_v_clamped = torch.clamp(self.log_var_v, min=-6.0, max=3.0)
+        log_var_p_clamped = torch.clamp(self.log_var_p, min=-6.0, max=3.0)
+        
+        # 3. 수학적 동적 가중치 적용
+        weighted_value_loss = torch.exp(-log_var_v_clamped) * value_loss + log_var_v_clamped
+        weighted_policy_loss = torch.exp(-log_var_p_clamped) * policy_loss + log_var_p_clamped
         
         # 최종 Loss 합산
         total_loss = weighted_value_loss + weighted_policy_loss
@@ -312,12 +314,27 @@ class AlphaZeroTrainer:
             final_dir = os.path.join(self.run_dir, "final_codes")
             os.makedirs(final_dir, exist_ok=True)
             
+            # np.save(os.path.join(final_dir, "final_Hx.npy"), self.best_Hx)
+            # np.save(os.path.join(final_dir, "final_Hz.npy"), self.best_Hz)
+            # draw_surface_code_style(self.best_Hx, self.best_Hz, final_dir, filename_prefix="final_tanner_graph")
+            
             np.save(os.path.join(final_dir, "final_Hx.npy"), self.best_Hx)
             np.save(os.path.join(final_dir, "final_Hz.npy"), self.best_Hz)
-            draw_surface_code_style(self.best_Hx, self.best_Hz, final_dir, filename_prefix="final_tanner_graph")
             
-            self.evaluator.evaluate_logical_error_rate(self.best_Hx, self.best_Hz)
+            hx_path = os.path.join(final_dir, "final_Hx.npy")
+            hz_path = os.path.join(final_dir, "final_Hz.npy")
+            
+            draw_surface_code_style(self.best_Hx, self.best_Hz, final_dir, filename_prefix="final_tanner_graph")
             self.evaluator.save_circuit_diagram(self.best_Hx, self.best_Hz, final_dir, filename="final_circuit.svg")
+            
+            fano_save_path = os.path.join(final_dir, "fano_comparison.png")
+            draw_fano_steane_graph(hx_path, hz_path, save_path=fano_save_path, show_plot=False)
+            
+            grid_save_path = os.path.join(final_dir, "hardware_2d_grid.png")
+            draw_2d_grid_layout(hx_path, hz_path, save_path=grid_save_path, show_plot=False)
+                
+            # self.evaluator.evaluate_logical_error_rate(self.best_Hx, self.best_Hz)
+            # self.evaluator.save_circuit_diagram(self.best_Hx, self.best_Hz, final_dir, filename="final_circuit.svg")
             
             final_msg = f"🌟 [최종 결과] 가장 뛰어났던 코드가 'final_codes' 폴더에 정리되었습니다. (최종 에러율: {self.best_logical_error:.4f})"
             self.logger.info(final_msg)
