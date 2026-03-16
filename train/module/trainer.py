@@ -152,14 +152,37 @@ class AlphaZeroTrainer:
                 imp_05 = max(0, (0.05 - err_05) / 0.05)
                 base_value = np.clip((imp_01 * 0.5) + (imp_001 * 0.3) + (imp_05 * 0.2), 0.1, 1.0)
                 
-                # 🌟 2. 2D 기하학적 거리 패널티 (Auto-Grid 알고리즘)
-                # 큐비트+안정자 총 노드 수에 맞춰 가상의 정사각형 칩 크기 자동 계산 (예: 13개면 4x4 그리드)
-                grid_size = int(np.ceil(np.sqrt(self.num_qubits + self.num_stabilizers * 2)))
+                # 🌟 2. 2D 기하학적 거리 패널티 (Checkerboard 기반 체스판 교차 매핑)
+                total_nodes = self.num_qubits + self.num_stabilizers * 2
+                grid_size = int(np.ceil(np.sqrt(total_nodes)))
                 
-                def get_coord(index): # 1차원 인덱스를 2D (x, y) 좌표로 변환
-                    return (index // grid_size, index % grid_size)
+                # 인덱스를 체스판 형태의 (x, y) 좌표로 변환하는 함수
+                def get_coord(index):
+                    if not hasattr(get_coord, "mapping"):
+                        mapping = {}
+                        data_coords = []
+                        stab_coords = []
+                        
+                        # 격자를 돌면서 짝수/홀수 칸 분류
+                        for y in range(grid_size):
+                            for x in range(grid_size):
+                                if (x + y) % 2 == 0:
+                                    data_coords.append((x, -y)) # Data는 짝수 칸
+                                else:
+                                    stab_coords.append((x, -y)) # Stabilizer는 홀수 칸
+                                    
+                        # 인덱스에 좌표 할당
+                        for i in range(total_nodes):
+                            if i < self.num_qubits:
+                                mapping[i] = data_coords.pop(0) if data_coords else stab_coords.pop(0)
+                            else:
+                                mapping[i] = stab_coords.pop(0) if stab_coords else data_coords.pop(0)
+                        get_coord.mapping = mapping
+
+                    return get_coord.mapping[index]
                 
                 total_distance = 0
+                
                 for i in range(Hx.shape[0]):
                     stab_coord = get_coord(self.num_qubits + i) # X 안정자의 가상 좌표
                     for j in range(Hx.shape[1]):
@@ -314,16 +337,14 @@ class AlphaZeroTrainer:
             final_dir = os.path.join(self.run_dir, "final_codes")
             os.makedirs(final_dir, exist_ok=True)
             
-            # np.save(os.path.join(final_dir, "final_Hx.npy"), self.best_Hx)
-            # np.save(os.path.join(final_dir, "final_Hz.npy"), self.best_Hz)
-            # draw_surface_code_style(self.best_Hx, self.best_Hz, final_dir, filename_prefix="final_tanner_graph")
-            
-            np.save(os.path.join(final_dir, "final_Hx.npy"), self.best_Hx)
-            np.save(os.path.join(final_dir, "final_Hz.npy"), self.best_Hz)
-            
             hx_path = os.path.join(final_dir, "final_Hx.npy")
             hz_path = os.path.join(final_dir, "final_Hz.npy")
             
+            # 1. 행렬 저장
+            np.save(hx_path, self.best_Hx)
+            np.save(hz_path, self.best_Hz)
+            
+            # 2. 시각화 자료 4종 세트 자동 저장
             draw_surface_code_style(self.best_Hx, self.best_Hz, final_dir, filename_prefix="final_tanner_graph")
             self.evaluator.save_circuit_diagram(self.best_Hx, self.best_Hz, final_dir, filename="final_circuit.svg")
             
@@ -333,12 +354,13 @@ class AlphaZeroTrainer:
             grid_save_path = os.path.join(final_dir, "hardware_2d_grid.png")
             draw_2d_grid_layout(hx_path, hz_path, save_path=grid_save_path, show_plot=False)
                 
-            # self.evaluator.evaluate_logical_error_rate(self.best_Hx, self.best_Hz)
-            # self.evaluator.save_circuit_diagram(self.best_Hx, self.best_Hz, final_dir, filename="final_circuit.svg")
-            
             final_msg = f"🌟 [최종 결과] 가장 뛰어났던 코드가 'final_codes' 폴더에 정리되었습니다. (최종 에러율: {self.best_logical_error:.4f})"
             self.logger.info(final_msg)
             self._console_print(final_msg)
+            
+        end_msg = f"🎉 학습 완료! 최고 에러율: {self.best_logical_error:.4f} \n저장 위치: {model_path}"
+        self.logger.info(end_msg)
+        self._console_print(end_msg)
         
         end_msg = f"🎉 학습 완료! 최고 에러율: {self.best_logical_error:.4f} \n저장 위치: {model_path}"
         self.logger.info(end_msg)
