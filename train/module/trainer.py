@@ -10,6 +10,7 @@ import torch.nn.functional as F
 import numpy as np
 from collections import deque
 import random
+from tqdm import tqdm
 
 # 🌟 1. 프로젝트 최상위 루트 경로를 절대 경로로 계산하여 파이썬 시스템 경로에 추가
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -100,7 +101,8 @@ class AlphaZeroTrainer:
 
     def _console_print(self, message):
         time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
-        print(f"{time_str} [INFO] {message}")
+        # print 대신 tqdm.write를 사용하여 UI 깨짐 방지
+        tqdm.write(f"{time_str} [INFO] {message}")
 
     def execute_episode(self, current_epoch, current_ep):
         state, info = self.env.reset()
@@ -297,12 +299,12 @@ class AlphaZeroTrainer:
             self.logger.info(epoch_msg)
             self._console_print(epoch_msg)
             
-            for ep in range(self.episodes):
+            for ep in tqdm(range(self.episodes), desc="🎮 데이터 수집 (Self-Play)", leave=False, ncols=90, colour='green'):
                 episode_data = self.execute_episode(epoch, ep)
                 self.memory.extend(episode_data)
                 
             losses = None
-            for _ in range(100): 
+            for _ in tqdm(range(100), desc="🧠 신경망 학습 (Training)", leave=False, ncols=90, colour='blue'): 
                 losses = self.train_network()
                 
             # 🌟 에포크가 끝날 때마다 코사인 스케줄러 1스텝 진행 (학습률 부드럽게 감소)
