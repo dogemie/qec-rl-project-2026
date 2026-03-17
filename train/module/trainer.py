@@ -184,4 +184,13 @@ class AlphaZeroTrainer:
         self.logger.save_final_codes(self.best_Hx, self.best_Hz, self.evaluator)
             
         self.logger.info(f"🌟 [최종 결과] 가장 뛰어났던 코드가 'final_codes' 폴더에 정리되었습니다. (최종 에러율: {self.best_logical_error:.4f})")
+        
+        # 🌟 6. Break-even 달성 시 Sinter 정밀 검증 가동!
+        if self.best_logical_error < 0.01:
+            self.logger.info("🚀 [Break-Even 달성] 물리적 에러율(1%)의 한계를 돌파한 기적의 코드가 발견되었습니다!")
+            self.logger.info("🔥 Sinter를 사용한 Threshold 정밀 검증 및 그래프 생성을 시작합니다. (시간이 조금 걸릴 수 있습니다...)")
+            
+            # 로거의 Sinter 평가 함수 호출
+            self.logger.trigger_sinter_evaluation(self.best_Hx, self.best_Hz, self.evaluator)
+        
         self.logger.info(f"🎉 학습 완료! 최고 에러율: {self.best_logical_error:.4f} \n저장 위치: {model_path}")

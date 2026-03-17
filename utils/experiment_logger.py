@@ -9,6 +9,7 @@ from tqdm import tqdm
 from utils.viz import draw_surface_code_style 
 from utils.viz_fano import draw_fano_steane_graph
 from utils.viz_2d_grid import draw_2d_grid_layout
+from utils.sinter_runner import run_sinter_evaluation
 
 class ExperimentLogger:
     """
@@ -100,3 +101,8 @@ class ExperimentLogger:
             return
         final_dir = os.path.join(self.run_dir, "final_codes")
         self._generate_and_save_artifacts(final_dir, best_Hx, best_Hz, evaluator)
+    
+    def trigger_sinter_evaluation(self, best_Hx, best_Hz, evaluator):
+        """Break-even 돌파 시 외부 Sinter 모듈을 가동합니다."""
+        self.info("🚀 [Break-Even 달성] 물리적 에러율(1%)의 한계를 돌파한 기적의 코드가 발견되었습니다!")
+        run_sinter_evaluation(best_Hx, best_Hz, evaluator, save_dir=self.run_dir, logger=self)
