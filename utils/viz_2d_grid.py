@@ -6,7 +6,7 @@ import os
 def draw_2d_grid_layout(hx_path, hz_path, save_path=None, show_plot=True):
     """
     물리적 2D 격자(Grid) 위에서 QEC 코드의 배선을 시각화합니다.
-    AI가 하드웨어 거리를 얼마나 잘 최적화했는지 확인하는 용도입니다.
+    (범용 동적 격자 확장 및 패리티 기반 매핑 적용)
     """
     if not os.path.exists(hx_path) or not os.path.exists(hz_path):
         print("❌ Hx 또는 Hz numpy 파일을 찾을 수 없습니다.")
@@ -19,30 +19,43 @@ def draw_2d_grid_layout(hx_path, hz_path, save_path=None, show_plot=True):
     num_z_stabs = Hz.shape[0]
     total_nodes = num_qubits + num_x_stabs + num_z_stabs
 
-    # AI가 훈련 시 사용한 것과 동일한 Auto-Grid 크기 계산
-    grid_size = int(np.ceil(np.sqrt(total_nodes)))
+    # 🌟 회원님의 일반화 공식 적용: ceil(sqrt(qubits)) * 2 + 5
+    n = int(np.ceil(np.sqrt(num_qubits)))
+    grid_size = n * 2 + 5
 
     def get_coord(index):
         if not hasattr(get_coord, "mapping"):
             mapping = {}
+            center = grid_size // 2
             data_coords = []
             stab_coords = []
             
-            # 1. 격자를 돌면서 짝수/홀수 칸 분류 (체스판 형태)
+            # 1. 격자를 돌면서 중심을 기준으로 짝수/홀수 칸 분류
             for y in range(grid_size):
                 for x in range(grid_size):
-                    if (x + y) % 2 == 0:
-                        data_coords.append((x, -y)) # 짝수 칸
+                    # 중심으로부터의 거리 (정사각형 형태로 퍼져나가도록 Chebyshev 거리 사용)
+                    dist = max(abs(x - center), abs(y - center))
+                    
+                    # 데이터 큐비트는 무조건 홀수 좌표 (x, y 모두 홀수)
+                    if x % 2 == 1 and y % 2 == 1:
+                        data_coords.append((dist, y, x, x, -y))
                     else:
-                        stab_coords.append((x, -y)) # 홀수 칸
+                        # 안정자는 그 외의 공간
+                        stab_coords.append((dist, y, x, x, -y))
                         
-            # 2. 인덱스에 좌표 할당 (Data Qubit은 짝수칸, Stabilizer는 홀수칸 우선 배치)
+            # 2. 중심에서 가까운 순서대로 정렬 (맵 중앙에 뭉치도록 유도)
+            data_coords.sort()
+            stab_coords.sort()
+            
+            # 정렬 후 실제 좌표(x, -y)만 추출
+            data_coords = [(x, y) for _, _, _, x, y in data_coords]
+            stab_coords = [(x, y) for _, _, _, x, y in stab_coords]
+            
+            # 3. 인덱스에 좌표 할당
             for i in range(total_nodes):
                 if i < num_qubits:
-                    # 데이터 큐비트
                     mapping[i] = data_coords.pop(0) if data_coords else stab_coords.pop(0)
                 else:
-                    # 안정자 (X, Z)
                     mapping[i] = stab_coords.pop(0) if stab_coords else data_coords.pop(0)
                     
             get_coord.mapping = mapping
@@ -88,33 +101,27 @@ def draw_2d_grid_layout(hx_path, hz_path, save_path=None, show_plot=True):
         x, y = get_coord(idx)
         
         if idx < num_qubits:
-            # 데이터 큐비트 (회색 원)
             circle = patches.Circle((x, y), node_radius, facecolor='lightgray', edgecolor='black', linewidth=2, zorder=2)
             ax.add_patch(circle)
             ax.text(x, y, f'D{idx}', ha='center', va='center', fontweight='bold', fontsize=12)
         elif idx < num_qubits + num_x_stabs:
-            # X 안정자 (노란색 사각형)
             stab_num = idx - num_qubits
             rect = patches.Rectangle((x - node_radius, y - node_radius), node_radius*2, node_radius*2, 
                                      facecolor='gold', edgecolor='black', linewidth=2, zorder=2)
             ax.add_patch(rect)
             ax.text(x, y, f'X{stab_num}', ha='center', va='center', fontweight='bold', fontsize=12)
         else:
-            # Z 안정자 (초록색 사각형)
             stab_num = idx - num_qubits - num_x_stabs
             rect = patches.Rectangle((x - node_radius, y - node_radius), node_radius*2, node_radius*2, 
                                      facecolor='limegreen', edgecolor='black', linewidth=2, zorder=2)
             ax.add_patch(rect)
             ax.text(x, y, f'Z{stab_num}', ha='center', va='center', fontweight='bold', fontsize=12)
 
-    # 타이틀 및 메타데이터 표시
-    plt.title("AI Generated QEC Code on 2D Hardware Grid", fontsize=16, fontweight='bold', pad=20)
+    plt.title(f"Hardware Grid Layout (Size: {grid_size}x{grid_size})", fontsize=16, fontweight='bold', pad=20)
     info_text = f"Total CNOTs: {total_cnots}\nTotal Manhattan Distance: {total_distance}"
     plt.figtext(0.15, 0.15, info_text, fontsize=12, bbox=dict(facecolor='white', alpha=0.8, edgecolor='black'))
 
     ax.axis('off')
-    
-    # 여백 조절
     ax.set_xlim(-0.5, grid_size - 0.5)
     ax.set_ylim(-grid_size + 0.5, 0.5)
 
@@ -126,12 +133,3 @@ def draw_2d_grid_layout(hx_path, hz_path, save_path=None, show_plot=True):
         plt.show()
     else:
         plt.close(fig)
-
-# 독립 실행을 위한 테스트 코드
-if __name__ == "__main__":
-    # 방금 전 기록을 달성한 폴더의 경로를 입력해 테스트해 볼 수 있습니다.
-    # 예시:
-    # hx_file = "../outputs/260315_2151_s53832/best_codes_epcX_epY/best_Hx.npy"
-    # hz_file = "../outputs/260315_2151_s53832/best_codes_epcX_epY/best_Hz.npy"
-    # draw_2d_grid_layout(hx_file, hz_file, save_path="test_2d_grid.png")
-    pass

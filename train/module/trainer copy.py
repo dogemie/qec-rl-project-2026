@@ -17,6 +17,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..
 if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
+# 이제 루트 경로에 있는 커스텀 모듈들을 정상적으로 임포트할 수 있습니다.
 from envs.qec_env import QECEnv
 from agent.network import QECNet
 from agent.mcts import MCTS
@@ -32,6 +33,7 @@ class AlphaZeroTrainer:
         
         self.run_name = f"{self.timestamp}_s{self.seed}"
         
+        # 🌟 2. 저장 폴더 경로도 PROJECT_ROOT를 기준으로 잡아줍니다.
         self.run_dir = os.path.join(PROJECT_ROOT, "outputs", self.run_name)
         os.makedirs(self.run_dir, exist_ok=True)
         
@@ -46,17 +48,19 @@ class AlphaZeroTrainer:
         )
         self.logger = logging.getLogger(__name__)
         
+        # 🌟 3. CSV 및 데이터 관리 설정
         self.csv_file = os.path.join(self.run_dir, f"training_history_{self.run_name}.csv")
         with open(self.csv_file, mode='w', newline='') as f:
             writer = csv.writer(f)
+            # 논문용 Figure를 그리기 위한 헤더(Header) 작성
             writer.writerow(['Epoch', 'Total_Loss', 'Value_Loss', 'Policy_Loss', 
                              'Best_Error_1%', 'Best_Error_0.1%', 'Best_Error_5%', 
                              'Best_CNOT_Count', 'Best_Wiring_Distance'])
         
+        # 베스트 코드의 하드웨어 스펙을 기억할 변수 추가
         self.best_cnots = -1
         self.best_distance = -1
         
-        # 🌟 Surface Code [9,1,3] 테스트 환경
         self.num_qubits = 9
         self.num_stabilizers = 4
         self.episodes = 200           
@@ -70,15 +74,21 @@ class AlphaZeroTrainer:
         
         self.network = QECNet(self.num_qubits, self.num_stabilizers).to(self.device)
         
+        # 🌟 1. 동적 가중치(Uncertainty Weighting)를 위한 학습 가능한 파라미터 생성
+        # 초기값은 0으로 시작 (즉, 가중치 exp(0) = 1.0 에서 시작)
         self.log_var_v = torch.zeros(1, requires_grad=True, device=self.device)
         self.log_var_p = torch.zeros(1, requires_grad=True, device=self.device)
 
+        # 🌟 2. Optimizer에 신경망 파라미터와 동적 가중치 파라미터를 함께 등록 (AdamW 사용)
         self.optimizer = optim.AdamW(
             list(self.network.parameters()) + [self.log_var_v, self.log_var_p], 
             lr=0.01, 
             weight_decay=1e-4
         )
         
+        # 🌟 3. Cosine Annealing 스케줄러 도입
+        # T_max: 반주기
+        # eta_min: 가장 작아졌을 때의 학습률
         self.lr_scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
             self.optimizer, T_0=25, T_mult=1, eta_min=1e-4
         )
@@ -91,6 +101,7 @@ class AlphaZeroTrainer:
 
     def _console_print(self, message):
         time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
+        # print 대신 tqdm.write를 사용하여 UI 깨짐 방지
         tqdm.write(f"{time_str} [INFO] {message}")
 
     def execute_episode(self, current_epoch, current_ep):
@@ -116,55 +127,41 @@ class AlphaZeroTrainer:
         dot_product = np.dot(Hx, Hz.T)
         
         violations = np.sum((dot_product % 2) != 0)
+        
         orphaned_x = np.sum(np.sum(Hx, axis=0) == 0)
         orphaned_z = np.sum(np.sum(Hz, axis=0) == 0)
         total_orphans = orphaned_x + orphaned_z
         
         steps = len(episode_memory) 
         
-        # 🌟 1. 점진적 패널티 (보상 셰이핑 적용)
         if violations > 0 or total_orphans > 0:
             max_violations = self.num_stabilizers * self.num_stabilizers
-            
-            violation_ratio = violations / max_violations
-            orphan_ratio = total_orphans / self.num_qubits
-            
-            # 위반이 줄어들수록 패널티가 0에 가깝게 완화됨
-            # penalty_score = (violation_ratio * 0.7) + (orphan_ratio * 0.3)
-            # final_value = -1.0 * penalty_score
-            
-            # 🌟 수정할 코드 (지수적 보상 셰이핑)
-            # 위반이 줄어들수록 패널티가 0이 아니라 오히려 양수(기대감)로 확 꺾이게 만듭니다.
-            # 위반이 0개에 가까워질수록 점수가 팍팍 오르는 쾌감을 줍니다.
-            penalty_score = (violation_ratio ** 3) * 0.8 + (orphan_ratio ** 2) * 0.2
+            penalty_score = (violations + total_orphans) / (max_violations + self.num_qubits)
             final_value = -1.0 * penalty_score
-            
-            # 위반이 1~2개로 아주 적을 때는 오히려 약소한 플러스 점수(0.1 ~ 0.2)를 주어 희망고문을 합니다.
-            if violations <= 2 and total_orphans == 0:
-                final_value = 0.2
-            
+            self.logger.info(f"⚠️ [제출 완료] {steps}턴 진행 -> 위반 {violations}개, 버려진 큐비트 {total_orphans}개 (가치: {final_value:.2f})")
         else:
-            # 🌟 2. [돌파구!] 유효한 코드 발견 시 생존 보너스 부여
-            base_validity_reward = 0.5 
-            
-            err_01 = self.evaluator.evaluate_logical_error_rate(Hx, Hz, noise_rate=0.01)
-            err_001 = self.evaluator.evaluate_logical_error_rate(Hx, Hz, noise_rate=0.001)
-            err_05 = self.evaluator.evaluate_logical_error_rate(Hx, Hz, noise_rate=0.05)
+            # 🌟 1. 다중 노이즈 강건성 평가 (Sycamore + Willow + Worst Case)
+            err_01 = self.evaluator.evaluate_logical_error_rate(Hx, Hz, noise_rate=0.01)   # 베이스라인 (1%)
+            err_001 = self.evaluator.evaluate_logical_error_rate(Hx, Hz, noise_rate=0.001) # Willow급 최신 칩 (0.1%)
+            err_05 = self.evaluator.evaluate_logical_error_rate(Hx, Hz, noise_rate=0.05)   # 가혹한 환경 (5%)
             
             if err_01 >= 1.0 or err_001 >= 1.0 or err_05 >= 1.0:
-                final_value = base_validity_reward
+                final_value = 0.0
             else:
+                # 3가지 환경의 개선도를 종합하여 기본 성능 점수 산출
                 imp_01 = max(0, (0.01 - err_01) / 0.01)
                 imp_001 = max(0, (0.001 - err_001) / 0.001)
                 imp_05 = max(0, (0.05 - err_05) / 0.05)
+                base_value = np.clip((imp_01 * 0.5) + (imp_001 * 0.3) + (imp_05 * 0.2), 0.1, 1.0)
                 
-                defense_score = np.clip((imp_01 * 0.5) + (imp_001 * 0.3) + (imp_05 * 0.2), 0.0, 0.5)
-                
-                # 2D 기하학적 거리 패널티 (동적 격자 확장)
+                # 🌟 2. 2D 기하학적 거리 패널티 (범용 동적 격자 확장 및 패리티 기반 매핑 적용)
                 total_nodes = self.num_qubits + self.num_stabilizers * 2
+                
+                # 회원님의 일반화 공식 적용: ceil(sqrt(qubits)) * 2 + 5
                 n = int(np.ceil(np.sqrt(self.num_qubits)))
                 grid_size = n * 2 + 5
                 
+                # 인덱스를 체스판 형태의 (x, y) 좌표로 변환하는 함수
                 def get_coord(index):
                     if not hasattr(get_coord, "mapping"):
                         mapping = {}
@@ -172,20 +169,27 @@ class AlphaZeroTrainer:
                         data_coords = []
                         stab_coords = []
                         
+                        # 격자를 돌면서 중심을 기준으로 짝수/홀수 칸 분류
                         for y in range(grid_size):
                             for x in range(grid_size):
+                                # 중심으로부터의 거리 (정사각형 형태로 퍼져나가도록)
                                 dist = max(abs(x - center), abs(y - center))
+                                
+                                # 데이터 큐비트는 무조건 홀수 좌표 (x, y 모두 홀수)
                                 if x % 2 == 1 and y % 2 == 1:
                                     data_coords.append((dist, y, x, x, -y))
                                 else:
                                     stab_coords.append((dist, y, x, x, -y))
                                     
+                        # 중심에서 가까운 순서대로 정렬 (맵 중앙에 뭉치도록 유도)
                         data_coords.sort()
                         stab_coords.sort()
                         
+                        # 정렬 후 실제 좌표만 추출
                         data_coords = [(x, y) for _, _, _, x, y in data_coords]
                         stab_coords = [(x, y) for _, _, _, x, y in stab_coords]
                         
+                        # 인덱스에 좌표 할당
                         for i in range(total_nodes):
                             if i < self.num_qubits:
                                 mapping[i] = data_coords.pop(0) if data_coords else stab_coords.pop(0)
@@ -196,33 +200,38 @@ class AlphaZeroTrainer:
                     return get_coord.mapping[index]
                 
                 total_distance = 0
+                
                 for i in range(Hx.shape[0]):
-                    stab_coord = get_coord(self.num_qubits + i)
+                    stab_coord = get_coord(self.num_qubits + i) # X 안정자의 가상 좌표
                     for j in range(Hx.shape[1]):
                         if Hx[i, j] == 1:
                             qubit_coord = get_coord(j)
+                            # 맨해튼 거리 누적
                             total_distance += abs(stab_coord[0] - qubit_coord[0]) + abs(stab_coord[1] - qubit_coord[1])
                 
                 for i in range(Hz.shape[0]):
-                    stab_coord = get_coord(self.num_qubits + self.num_stabilizers + i)
+                    stab_coord = get_coord(self.num_qubits + self.num_stabilizers + i) # Z 안정자의 가상 좌표
                     for j in range(Hz.shape[1]):
                         if Hz[i, j] == 1:
                             qubit_coord = get_coord(j)
                             total_distance += abs(stab_coord[0] - qubit_coord[0]) + abs(stab_coord[1] - qubit_coord[1])
                 
+                # 🌟 3. CNOT 게이트 최소화 (Sparsity)
                 total_cnots = np.sum(Hx) + np.sum(Hz)
+                
+                # 패널티를 0.0 ~ 1.0 사이로 정규화 (선이 짧을수록, 적을수록 1에 가까움)
                 distance_penalty = min(1.0, total_distance / (total_cnots * grid_size))
                 sparsity_penalty = total_cnots / (self.num_qubits * self.num_stabilizers * 2)
                 
-                hw_score = ((1.0 - distance_penalty) * 0.5) + ((1.0 - sparsity_penalty) * 0.5)
-                hw_score = hw_score * 0.5 
-                
-                final_value = base_validity_reward + (defense_score * 0.5) + hw_score
+                # 최종 가치 점수 = 논리 방어력(60%) + 짧은 배선 보상(20%) + 적은 선 보상(20%)
+                final_value = base_value * 0.6 + (1.0 - distance_penalty) * 0.2 + (1.0 - sparsity_penalty) * 0.2
                 final_value = np.clip(final_value, 0.0, 1.0)
                 
                 self.logger.info(f"💎 [HW최적화] CNOT: {total_cnots} | 배선 거리: {total_distance} | Willow급 에러율: {err_001:.5f}")
-                self.logger.info(f"✨ [기적의 코드] {steps}턴 진행! 종합 가치: {final_value:.2f} (에러율 1%기준: {err_01:.4f})")
             
+            self.logger.info(f"✨ [기적의 코드] {steps}턴 진행! 종합 가치: {final_value:.2f} (에러율 1%기준: {err_01:.4f})")
+            
+            # 신기록 저장 판단은 기준치(1%) 에러율을 바탕으로 수행합니다.
             if err_01 < self.best_logical_error and err_01 < 0.01:
                 self.best_logical_error = err_01
                 self.best_Hx = Hx.copy()
@@ -246,11 +255,18 @@ class AlphaZeroTrainer:
                 draw_surface_code_style(Hx, Hz, save_dir, filename_prefix="best_tanner_graph")
                 self.evaluator.save_circuit_diagram(Hx, Hz, save_dir, filename="best_circuit.svg")
                 
+                # 🌟 Fano 평면 기반의 비교 이미지 자동 생성 및 저장!
                 fano_save_path = os.path.join(save_dir, "fano_comparison.png")
                 draw_fano_steane_graph(hx_save_path, hz_save_path, save_path=fano_save_path, show_plot=False)
                 
+                # 🌟 하드웨어 친화적 2D Grid 레이아웃 자동 생성 및 저장!
                 grid_save_path = os.path.join(save_dir, "hardware_2d_grid.png")
                 draw_2d_grid_layout(hx_save_path, hz_save_path, save_path=grid_save_path, show_plot=False)
+                
+                # np.save(os.path.join(save_dir, "best_Hx.npy"), Hx)
+                # np.save(os.path.join(save_dir, "best_Hz.npy"), Hz)
+                # draw_surface_code_style(Hx, Hz, save_dir, filename_prefix="best_tanner_graph")
+                # self.evaluator.save_circuit_diagram(Hx, Hz, save_dir, filename="best_circuit.svg")
         
         for step_data in episode_memory:
             step_data.append(final_value)
@@ -269,15 +285,19 @@ class AlphaZeroTrainer:
         self.optimizer.zero_grad()
         pred_probs, pred_values = self.network(states, masks)
         
+        # 1. 원본 Loss 계산
         value_loss = F.mse_loss(pred_values, target_values)
         policy_loss = -torch.sum(target_probs * torch.log(pred_probs + 1e-8)) / self.batch_size
         
+        # 2. 수정된 Clamping 적용 (Value 가중치가 더 강하게 개입할 수 있도록 공간 확보)
         log_var_v_clamped = torch.clamp(self.log_var_v, min=-6.0, max=3.0)
         log_var_p_clamped = torch.clamp(self.log_var_p, min=-6.0, max=3.0)
         
+        # 3. 수학적 동적 가중치 적용
         weighted_value_loss = torch.exp(-log_var_v_clamped) * value_loss + log_var_v_clamped
         weighted_policy_loss = torch.exp(-log_var_p_clamped) * policy_loss + log_var_p_clamped
         
+        # 최종 Loss 합산
         total_loss = weighted_value_loss + weighted_policy_loss
         
         total_loss.backward()
@@ -303,23 +323,30 @@ class AlphaZeroTrainer:
             for _ in tqdm(range(100), desc="🧠 신경망 학습 (Training)", leave=False, ncols=90, colour='blue'): 
                 losses = self.train_network()
                 
+            # 🌟 에포크가 끝날 때마다 코사인 스케줄러 1스텝 진행 (학습률 부드럽게 감소)
             self.lr_scheduler.step()
                 
             if losses:
+                # 현재 학습률 확인
                 current_lr = self.optimizer.param_groups[0]['lr']
+                
+                # 신경망이 스스로 부여한 현재 가중치(Weight) 확인
                 weight_v = torch.exp(-self.log_var_v).item()
                 weight_p = torch.exp(-self.log_var_p).item()
                 
+                # 로그 메시지에 학습률과 동적 가중치 상황을 함께 출력
                 loss_msg = (f"📈 Loss - Tot: {losses[0]:.4f} | Val: {losses[1]:.4f} | Pol: {losses[2]:.4f} | "
                             f"LR: {current_lr:.6f} | W_Val: {weight_v:.3f}, W_Pol: {weight_p:.3f}")
                 self.logger.info(loss_msg)
                 self._console_print(loss_msg)
                 
+                # 🌟 Episode 마다 CSV에 학습도 기록.
                 with open(self.csv_file, mode='a', newline='') as f:
                     writer = csv.writer(f)
                     writer.writerow([epoch + 1, losses[0], losses[1], losses[2], 
                                      self.best_logical_error, '-', '-', 
                                      self.best_cnots, self.best_distance])  
+            
             
         model_path = os.path.join(self.run_dir, f"qec_alphazero_model_s{self.seed}.pth")
         torch.save(self.network.state_dict(), model_path)
@@ -331,9 +358,11 @@ class AlphaZeroTrainer:
             hx_path = os.path.join(final_dir, "final_Hx.npy")
             hz_path = os.path.join(final_dir, "final_Hz.npy")
             
+            # 1. 행렬 저장
             np.save(hx_path, self.best_Hx)
             np.save(hz_path, self.best_Hz)
             
+            # 2. 시각화 자료 4종 세트 자동 저장
             draw_surface_code_style(self.best_Hx, self.best_Hz, final_dir, filename_prefix="final_tanner_graph")
             self.evaluator.save_circuit_diagram(self.best_Hx, self.best_Hz, final_dir, filename="final_circuit.svg")
             
