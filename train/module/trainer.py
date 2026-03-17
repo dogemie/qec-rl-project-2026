@@ -138,8 +138,8 @@ class AlphaZeroTrainer:
         value_loss = F.mse_loss(pred_values, target_values)
         policy_loss = -torch.sum(target_probs * torch.log(pred_probs + 1e-8)) / self.batch_size
         
-        log_var_v_clamped = torch.clamp(self.log_var_v, min=-6.0, max=3.0)
-        log_var_p_clamped = torch.clamp(self.log_var_p, min=-6.0, max=3.0)
+        log_var_v_clamped = torch.clamp(self.log_var_v, min=-3.0, max=3.0)
+        log_var_p_clamped = torch.clamp(self.log_var_p, min=-3.0, max=3.0)
         
         weighted_value_loss = torch.exp(-log_var_v_clamped) * value_loss + log_var_v_clamped
         weighted_policy_loss = torch.exp(-log_var_p_clamped) * policy_loss + log_var_p_clamped
