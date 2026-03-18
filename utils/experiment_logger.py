@@ -1,4 +1,5 @@
 import os
+import sys
 import csv
 import logging
 from datetime import datetime
@@ -10,6 +11,17 @@ from utils.viz import draw_surface_code_style
 from utils.viz_fano import draw_fano_steane_graph
 from utils.viz_2d_grid import draw_2d_grid_layout
 from utils.sinter_runner import run_sinter_evaluation
+
+# 🌟 무적의 루트 탐색기: 현재 파일 위치에서 위로 올라가며 'envs'와 'sim' 폴더가 있는 진짜 최상위 루트를 찾습니다.
+current_dir = os.path.dirname(os.path.abspath(__file__))
+while current_dir != os.path.dirname(current_dir): # 드라이브 최상단 도달 전까지 반복
+    if os.path.exists(os.path.join(current_dir, "envs")) and os.path.exists(os.path.join(current_dir, "sim")):
+        break
+    current_dir = os.path.dirname(current_dir)
+PROJECT_ROOT = current_dir
+
+if PROJECT_ROOT not in sys.path:
+    sys.path.append(PROJECT_ROOT)
 
 class ExperimentLogger:
     """

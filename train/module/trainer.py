@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 # 🌟 1. 프로젝트 최상위 루트 경로를 절대 경로로 계산하여 파이썬 시스템 경로에 추가
 # 이 파일이 `train/trainer.py`에 위치하므로, 한 단계 위('..')가 프로젝트 루트가 됩니다.
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
