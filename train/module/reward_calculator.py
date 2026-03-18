@@ -27,13 +27,14 @@ def calculate_qec_reward(Hx, Hz, num_qubits, num_stabilizers, evaluator):
         violation_ratio = violations / max_violations
         orphan_ratio = total_orphans / num_qubits
         
-        # 지수적 보상 셰이핑
-        penalty_score = (violation_ratio ** 3) * 0.8 + (orphan_ratio ** 2) * 0.2
+        # 🌟 수정 1: 정직한 선형 패널티 (AI가 위반을 1개 줄일 때마다 점수 상승을 확실히 체감함)
+        penalty_score = (violation_ratio * 0.6) + (orphan_ratio * 0.4)
         result["final_value"] = -1.0 * penalty_score
         
-        # 희망고문 보상
+        # 🌟 수정 2: 희망고문을 양수(+)가 아닌 아주 작은 음수(-)로 변경
+        # 양수를 주면 AI가 정답(0개)을 안 찾고 2개에 안주할 수 있음 (Reward Hacking 방지)
         if violations <= 2 and total_orphans == 0:
-             result["final_value"] = 0.2 
+             result["final_value"] = -0.05 
              
         return result
 

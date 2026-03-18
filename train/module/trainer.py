@@ -44,7 +44,8 @@ class AlphaZeroTrainer:
         
         self.env = QECEnv(num_qubits=self.num_qubits, num_stabilizers=self.num_stabilizers)
         self.evaluator = StimEvaluator(num_qubits=self.num_qubits, noise_rate=0.01)
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cpu")
         
         self.network = QECNet(self.num_qubits, self.num_stabilizers).to(self.device)
         
