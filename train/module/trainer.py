@@ -43,7 +43,7 @@ class AlphaZeroTrainer:
         self.batch_size = 32          
         
         self.env = QECEnv(num_qubits=self.num_qubits, num_stabilizers=self.num_stabilizers)
-        self.evaluator = StimEvaluator(num_qubits=self.num_qubits, noise_rate=0.01)
+        self.evaluator = StimEvaluator(num_qubits=self.num_qubits, noise_rate_x=0.01, noise_rate_z=0.01)
         # self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.device = torch.device("cpu")
         

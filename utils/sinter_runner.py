@@ -18,7 +18,7 @@ def run_sinter_evaluation(Hx, Hz, evaluator, save_dir, logger=None):
     
     for p in noise_rates:
         # Z 에러 방어 기준(Memory Z)으로 회로 생성
-        circuit = evaluator.generate_circuit(Hx, Hz, noise_rate=p, is_x_basis=False) 
+        circuit = evaluator.generate_circuit(Hx, Hz, noise_rate_x=p, noise_rate_z=p, is_x_basis=False) 
         
         task = sinter.Task(
             circuit=circuit,

@@ -41,9 +41,10 @@ def calculate_qec_reward(Hx, Hz, num_qubits, num_stabilizers, evaluator):
     result["is_valid"] = True
     base_validity_reward = 0.5 
     
-    err_01 = evaluator.evaluate_logical_error_rate(Hx, Hz, noise_rate=0.01)
-    err_001 = evaluator.evaluate_logical_error_rate(Hx, Hz, noise_rate=0.001)
-    err_05 = evaluator.evaluate_logical_error_rate(Hx, Hz, noise_rate=0.05)
+    # X, Z 기저 모두에서 3가지 노이즈 레벨에 대한 에러율을 평가하여 방어력 점수 계산에 활용
+    err_01 = evaluator.evaluate_logical_error_rate(Hx, Hz, noise_rate_x=0.01, noise_rate_z=0.01)
+    err_001 = evaluator.evaluate_logical_error_rate(Hx, Hz, noise_rate_x=0.001, noise_rate_z=0.001)
+    err_05 = evaluator.evaluate_logical_error_rate(Hx, Hz, noise_rate_x=0.05, noise_rate_z=0.05)
     
     result["err_01"] = err_01
     result["err_001"] = err_001
