@@ -44,8 +44,8 @@ class AlphaZeroTrainer:
         
         self.env = QECEnv(num_qubits=self.num_qubits, num_stabilizers=self.num_stabilizers)
         self.evaluator = StimEvaluator(num_qubits=self.num_qubits, noise_rate_x=0.01, noise_rate_z=0.01)
-        # self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.device = torch.device("cpu")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # self.device = torch.device("cpu")
         
         self.network = QECNet(self.num_qubits, self.num_stabilizers).to(self.device)
         
@@ -106,7 +106,7 @@ class AlphaZeroTrainer:
             self.logger.info(f"✨ [기적의 코드] {steps}턴 진행! 종합 가치: {final_value:.2f} (에러율 1%기준: {err_01:.4f})")
             
             # 신기록 저장 로직
-            if err_01 < self.best_logical_error and err_01 < 0.01:
+            if err_01 < self.best_logical_error and err_01 < 0.1:
                 self.best_logical_error = err_01
                 self.best_Hx = Hx.copy()
                 self.best_Hz = Hz.copy()
