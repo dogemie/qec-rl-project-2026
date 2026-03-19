@@ -120,6 +120,12 @@ class QECEnv(gym.Env):
         r = rem // self.n
         col = rem % self.n
         
+        # 이미 선을 그은 곳(1)을 AI가 또 선택했다면, 그 즉시 코드를 제출하고 에피소드를 끝냅니다.
+        if self.state[c, r, col] == 1:
+            terminated = True
+            # 제출(종료) 행동 자체에 대한 중간 보상은 없음
+            return self.state.copy(), 0.0, terminated, False, self._get_info()
+        
         self.state[c, r, col] = 1
         self.current_step += 1
         
@@ -174,6 +180,7 @@ class QECEnv(gym.Env):
                 
             # 이미 선이 연결된 위치 차단
             if self.state[c, r, col] == 1:
+                mask[action] = 1
                 continue
                 
             # 허용된 최대 연결 수(max_weight) 초과 방지
