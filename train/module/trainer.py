@@ -42,11 +42,13 @@ class AlphaZeroTrainer:
         self.mcts_simulations = 200   
         self.batch_size = 32          
         
-        self.env = QECEnv(num_qubits=self.num_qubits, num_stabilizers=self.num_stabilizers)
+        # 🌟 1. 채점관(evaluator)을 "먼저" 고용합니다.
         self.evaluator = StimEvaluator(num_qubits=self.num_qubits, noise_rate_x=0.01, noise_rate_z=0.01)
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        # self.device = torch.device("cpu")
         
+        # 🌟 2. 고용된 채점관을 환경(env) 안에 파견(주입) 보냅니다.
+        self.env = QECEnv(num_qubits=self.num_qubits, num_stabilizers=self.num_stabilizers, evaluator=self.evaluator)
+        
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.network = QECNet(self.num_qubits, self.num_stabilizers).to(self.device)
         
         # 동적 가중치(Uncertainty Weighting) 파라미터

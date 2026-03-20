@@ -6,7 +6,7 @@ class QECEnv(gym.Env):
     """
     QEC (Quantum Error Correction) 탐색을 위한 MCTS/RL 커스텀 환경.
     """
-    def __init__(self, num_qubits=9, num_stabilizers=4, max_edges=32, max_weight=4):
+    def __init__(self, num_qubits=9, num_stabilizers=4, max_edges=32, max_weight=4, evaluator=None):
         """
         QECEnv 환경을 초기화합니다.
         
@@ -22,6 +22,7 @@ class QECEnv(gym.Env):
         self.m = num_stabilizers
         self.max_edges = max_edges
         self.max_weight = max_weight
+        self.evaluator = evaluator
         
         self.observation_space = spaces.Box(
             low=0, high=1, shape=(2, self.m, self.n), dtype=np.int8
@@ -123,8 +124,8 @@ class QECEnv(gym.Env):
         # 이미 선을 그은 곳(1)을 AI가 또 선택했다면, 그 즉시 코드를 제출하고 에피소드를 끝냅니다.
         if self.state[c, r, col] == 1:
             terminated = True
-            # 제출(종료) 행동 자체에 대한 중간 보상은 없음
-            return self.state.copy(), 0.0, terminated, False, self._get_info()
+            final_reward = self._get_final_reward()
+            return self.state.copy(), final_reward, terminated, False, self._get_info()
         
         self.state[c, r, col] = 1
         self.current_step += 1
@@ -135,6 +136,7 @@ class QECEnv(gym.Env):
         truncated = False
         if self.current_step >= self.max_edges:
             terminated = True
+            reward += self._get_final_reward()
             
         return self.state.copy(), reward, terminated, truncated, self._get_info()
 
@@ -202,3 +204,19 @@ class QECEnv(gym.Env):
             "action_mask": self.get_valid_action_mask(),
             "current_step": self.current_step
         }
+    
+    def _get_final_reward(self):
+        """
+        에피소드 종료 시점에 최종 보상을 계산하기 위해 채점관(evaluator)을 호출합니다.
+        
+        Returns:
+            float: 최종 보상값.
+        """
+        if self.evaluator is None:
+            return 0.0
+        
+        from train.module.reward_calculator import calculate_qec_reward
+        Hx, Hz = self.state[0], self.state[1]
+        reward_res = calculate_qec_reward(Hx, Hz, self.n, self.m, self.evaluator)
+        
+        return reward_res["final_value"]
