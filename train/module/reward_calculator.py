@@ -22,20 +22,35 @@ def calculate_qec_reward(Hx, Hz, num_qubits, num_stabilizers, evaluator):
         "is_valid": False
     }
 
+    # 교환 법칙이 망가진 정도에 따라 패널티를 다르게
     if violations > 0 or total_orphans > 0:
-        max_violations = num_stabilizers * num_stabilizers
-        violation_ratio = violations / max_violations
-        orphan_ratio = total_orphans / num_qubits
         
-        # 🌟 수정 1: 정직한 선형 패널티 (AI가 위반을 1개 줄일 때마다 점수 상승을 확실히 체감함)
-        penalty_score = (violation_ratio * 0.6) + (orphan_ratio * 0.4)
-        result["final_value"] = -1.0 * penalty_score
+        # 1. 패널티 계산 (위반은 엄격하게 깎음)
+        violation_penalty = -0.2 * violations
         
-        # 🌟 수정 2: 희망고문을 양수(+)가 아닌 아주 작은 음수(-)로 변경
-        # 양수를 주면 AI가 정답(0개)을 안 찾고 2개에 안주할 수 있음 (Reward Hacking 방지)
-        if violations <= 2 and total_orphans == 0:
-             result["final_value"] = -0.05 
-             
+        # 2. 긍정적 보상 계산 (고아가 적을수록, 즉 연결을 많이 할수록 플러스 점수)
+        # 전체 큐비트 중 '연결된 큐비트의 비율'을 점수로 줍니다. (0.0 ~ +0.4)
+        total_nodes = num_qubits + num_stabilizers * 2 # 예시
+        connected_ratio = 1.0 - (total_orphans / total_nodes)
+        connection_reward = 0.4 * connected_ratio
+        
+        # 3. 중간 가치(Value) 합산
+        # 아무것도 안 한 빈 판은 0점 근처, 위반을 내면 마이너스, 위반 없이 연결을 늘려가면 플러스가 됩니다.
+        intermediate_value = violation_penalty + connection_reward
+        
+        # 4. 완성된 코드(Valid)에 대한 엄청난 잭팟 보상
+        if violations == 0 and total_orphans == 0:
+            result["is_valid"] = True
+            base_validity_reward = 0.5
+            
+            # ... (이후 방어력 점수(err_01 등), 하드웨어 점수(distance) 계산 로직 동일)
+            
+            final_val = base_validity_reward + (defense_score * 0.5) + hw_score
+            result["final_value"] = np.clip(final_val, 0.0, 1.0)
+        else:
+            # 미완성 상태면 위에서 계산한 중간 가치를 반환 (최소 -1.0 최대 0.4)
+            result["final_value"] = max(-1.0, intermediate_value)
+
         return result
 
     result["is_valid"] = True

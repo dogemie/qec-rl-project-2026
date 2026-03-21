@@ -161,17 +161,16 @@ class QECEnv(gym.Env):
             changed_r (int): 변경된 행(안정자) 인덱스.
             
         Returns:
-            float: 스텝에 대한 중간 보상값.
+            float: 스텝에 대한 중간 보상값 (CNOT 초과 패널티).
         """
-        reward = 0.0
         row_weight = np.sum(self.state[changed_c, changed_r, :])
         
+        # 1. 하드웨어 스펙 초과 (선 5개 이상 긋기) -> 즉시 철퇴
         if row_weight > self.max_weight:
-            reward -= 1.0 
-        elif row_weight == self.max_weight:
-            reward += 0.2 
+            return -1.0 
             
-        return reward
+        # 정상적으로 선을 하나 그을 때마다 무조건 -0.01점씩 깎습니다.
+        return -0.01
 
     def get_valid_action_mask(self):
         """
