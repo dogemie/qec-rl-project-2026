@@ -51,12 +51,8 @@ class AlphaZeroTrainer:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.network = QECNet(self.num_qubits, self.num_stabilizers).to(self.device)
         
-        # 동적 가중치(Uncertainty Weighting) 파라미터
-        self.log_var_v = torch.zeros(1, requires_grad=True, device=self.device)
-        self.log_var_p = torch.zeros(1, requires_grad=True, device=self.device)
-
         self.optimizer = optim.AdamW(
-            list(self.network.parameters()) + [self.log_var_v, self.log_var_p], 
+            self.network.parameters(), 
             lr=0.01, 
             weight_decay=1e-4
         )
@@ -141,13 +137,7 @@ class AlphaZeroTrainer:
         value_loss = F.mse_loss(pred_values, target_values)
         policy_loss = -torch.sum(target_probs * torch.log(pred_probs + 1e-8)) / self.batch_size
         
-        log_var_v_clamped = torch.clamp(self.log_var_v, min=-3.0, max=3.0)
-        log_var_p_clamped = torch.clamp(self.log_var_p, min=-3.0, max=3.0)
-        
-        weighted_value_loss = torch.exp(-log_var_v_clamped) * value_loss + log_var_v_clamped
-        weighted_policy_loss = torch.exp(-log_var_p_clamped) * policy_loss + log_var_p_clamped
-        
-        total_loss = weighted_value_loss + weighted_policy_loss
+        total_loss = total_loss = value_loss + 2.0 * policy_loss
         
         total_loss.backward()
         self.optimizer.step()
@@ -172,11 +162,8 @@ class AlphaZeroTrainer:
                 
             if losses:
                 current_lr = self.optimizer.param_groups[0]['lr']
-                weight_v = torch.exp(-self.log_var_v).item()
-                weight_p = torch.exp(-self.log_var_p).item()
                 
-                loss_msg = (f"📈 Loss - Tot: {losses[0]:.4f} | Val: {losses[1]:.4f} | Pol: {losses[2]:.4f} | "
-                            f"LR: {current_lr:.6f} | W_Val: {weight_v:.3f}, W_Pol: {weight_p:.3f}")
+                loss_msg = (f"📈 Loss - Tot: {losses[0]:.4f} | Val: {losses[1]:.4f} | Pol: {losses[2]:.4f} | LR: {current_lr:.6f}")
                 self.logger.info(loss_msg)
                 
                 # CSV 기록 (로거에 위임)

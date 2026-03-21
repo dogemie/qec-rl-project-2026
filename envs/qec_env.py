@@ -45,7 +45,6 @@ class QECEnv(gym.Env):
         """
         mask = np.zeros((2, self.m, self.n), dtype=np.int8)
         
-        total_nodes = self.n + self.m * 2
         n_grid = int(np.ceil(np.sqrt(self.n)))
         grid_size = n_grid * 2 + 5
         center = grid_size // 2
@@ -54,27 +53,40 @@ class QECEnv(gym.Env):
             center += 1
             
         data_coords = []
-        stab_coords = []
+        x_stab_coords = []
+        z_stab_coords = []
         
         for y in range(grid_size):
             for x in range(grid_size):
                 dist = max(abs(x - center), abs(y - center))
+                
+                # 1. 데이터 큐비트는 모두 홀수(2n+1) 위치에
                 if x % 2 == 1 and y % 2 == 1:
                     data_coords.append((dist, y, x, x, -y))
-                elif x % 2 == 0 and y % 2 == 0:
-                    stab_coords.append((dist, y, x, x, -y))
                     
+                # 2. 🌟 안정자 큐비트는 짝수(2n) 위치에 두되, '체스판 무늬'로 X와 Z를 번갈아 배치!
+                elif x % 2 == 0 and y % 2 == 0:
+                    if (x // 2 + y // 2) % 2 == 0:
+                        x_stab_coords.append((dist, y, x, x, -y))
+                    else:
+                        z_stab_coords.append((dist, y, x, x, -y))
+                        
         data_coords.sort()
-        stab_coords.sort()
+        x_stab_coords.sort()
+        z_stab_coords.sort()
         
         data_coords = [(x, y) for _, _, _, x, y in data_coords]
-        stab_coords = [(x, y) for _, _, _, x, y in stab_coords]
+        x_stab_coords = [(x, y) for _, _, _, x, y in x_stab_coords]
+        z_stab_coords = [(x, y) for _, _, _, x, y in z_stab_coords]
         
+        # 3. 마스크 할당
         for c in range(2):
+            # c=0은 X 안정자(체스판 검은칸), c=1은 Z 안정자(체스판 하얀칸)
+            stab_list = x_stab_coords if c == 0 else z_stab_coords
+            
             for r in range(self.m):
-                stab_idx = c * self.m + r
-                if stab_idx < len(stab_coords):
-                    sx, sy = stab_coords[stab_idx]
+                if r < len(stab_list):
+                    sx, sy = stab_list[r]
                 else:
                     continue
                     
@@ -84,7 +96,7 @@ class QECEnv(gym.Env):
                     else:
                         continue
                         
-                    # 대각선으로 인접한 이웃 큐비트(맨해튼 거리 2)만 연결 가능하도록 허용
+                    # 물리적으로 인접한 거리 2일 때만 허용
                     if abs(sx - dx) + abs(sy - dy) == 2:
                         mask[c, r, col] = 1
                         
