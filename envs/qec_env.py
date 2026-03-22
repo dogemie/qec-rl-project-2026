@@ -1,6 +1,7 @@
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
+import itertools
 
 class QECEnv(gym.Env):
     """
@@ -23,6 +24,9 @@ class QECEnv(gym.Env):
         self.max_edges = max_edges
         self.max_weight = max_weight
         self.evaluator = evaluator
+        
+        self.pairs = list(itertools.combinations(range(self.m), 2))
+        self.num_pairs = len(self.pairs)
         
         self.observation_space = spaces.Box(
             low=0, high=1, shape=(2, self.m, self.n), dtype=np.int8
@@ -128,21 +132,24 @@ class QECEnv(gym.Env):
         Returns:
             tuple: (다음 상태, 보상, 종료 여부, 잘림 여부, 추가 정보)
         """
-        c = action // (self.m * self.n)
-        rem = action % (self.m * self.n)
-        r = rem // self.n
+        c = action // (self.num_pairs * self.n)
+        rem = action % (self.num_pairs * self.n)
+        pair_idx = rem // self.n
         col = rem % self.n
         
+        r1, r2 = self.pairs[pair_idx]
+        
         # 이미 선을 그은 곳(1)을 AI가 또 선택했다면, 그 즉시 코드를 제출하고 에피소드를 끝냅니다.
-        if self.state[c, r, col] == 1:
+        if self.state[c, r1, col] == 1 and self.state[c, r2, col] == 1:
             terminated = True
             final_reward = self._get_final_reward()
             return self.state.copy(), final_reward, terminated, False, self._get_info()
         
-        self.state[c, r, col] = 1
-        self.current_step += 1
+        self.state[c, r1, col] = 1
+        self.state[c, r2, col] = 1
+        self.current_step += 2
         
-        reward = self._calculate_step_reward(c, r)
+        reward = self._calculate_step_reward(c, r1, r2)
         
         terminated = False
         truncated = False
@@ -152,25 +159,14 @@ class QECEnv(gym.Env):
             
         return self.state.copy(), reward, terminated, truncated, self._get_info()
 
-    def _calculate_step_reward(self, changed_c, changed_r):
-        """
-        개별 스텝 진행에 따른 즉각적인 보상을 계산합니다.
-        
-        Args:
-            changed_c (int): 변경된 채널(H_X 또는 H_Z) 인덱스.
-            changed_r (int): 변경된 행(안정자) 인덱스.
-            
-        Returns:
-            float: 스텝에 대한 중간 보상값 (CNOT 초과 패널티).
-        """
-        row_weight = np.sum(self.state[changed_c, changed_r, :])
-        
-        # 1. 하드웨어 스펙 초과 (선 5개 이상 긋기) -> 즉시 철퇴
-        if row_weight > self.max_weight:
+    def _calculate_step_reward(self, changed_c, r1, r2):
+        # 가중치 제한 초과 시 즉시 철퇴
+        if np.sum(self.state[changed_c, r1, :]) > self.max_weight or \
+           np.sum(self.state[changed_c, r2, :]) > self.max_weight:
             return -1.0 
             
-        # 정상적으로 선을 하나 그을 때마다 무조건 -0.01점씩 깎습니다.
-        return -0.01
+        # 🌟 한 번에 2개의 선을 그으므로 CNOT 세금도 2배(-0.02) 징수
+        return -0.02
 
     def get_valid_action_mask(self):
         """
@@ -182,26 +178,31 @@ class QECEnv(gym.Env):
         mask = np.zeros(self.action_space.n, dtype=np.int8)
         
         for action in range(self.action_space.n):
-            c = action // (self.m * self.n)
-            rem = action % (self.m * self.n)
-            r = rem // self.n
+            c = action // (self.num_pairs * self.n)
+            rem = action % (self.num_pairs * self.n)
+            pair_idx = rem // self.n
             col = rem % self.n
+            r1, r2 = self.pairs[pair_idx]
             
-            # 하드웨어 구조상 물리적으로 멀리 떨어진 큐비트 간의 연결 차단
-            if self.valid_topology_mask[c, r, col] == 0:
+            # 1. 두 안정자 모두 하드웨어 토폴로지 상으로 연결 가능해야 함
+            if self.valid_topology_mask[c, r1, col] == 0 or self.valid_topology_mask[c, r2, col] == 0:
                 continue
                 
-            # 이미 선이 연결된 위치 차단
-            if self.state[c, r, col] == 1:
+            # 2. 이미 두 선이 모두 그어져 있다면 (Submit 버튼 활성화)
+            if self.state[c, r1, col] == 1 and self.state[c, r2, col] == 1:
                 mask[action] = 1
                 continue
                 
-            # 허용된 최대 연결 수(max_weight) 초과 방지
-            if np.sum(self.state[c, r, :]) >= self.max_weight:
+            # 3. 둘 중 하나라도 이미 그어져 있으면 꼬이므로 차단 (항상 쌍으로만 움직여야 함)
+            if self.state[c, r1, col] == 1 or self.state[c, r2, col] == 1:
                 continue
-            
-            mask[action] = 1 
                 
+            # 4. 가중치 제한 초과 방지
+            if np.sum(self.state[c, r1, :]) >= self.max_weight or np.sum(self.state[c, r2, :]) >= self.max_weight:
+                continue
+                
+            mask[action] = 1
+            
         return mask
 
     def _get_info(self):

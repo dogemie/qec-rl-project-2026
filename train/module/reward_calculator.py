@@ -135,7 +135,6 @@ def calculate_qec_reward(Hx, Hz, num_qubits, num_stabilizers, evaluator):
         
         defense_score = np.clip((imp_01 * 0.5) + (imp_001 * 0.3) + (imp_05 * 0.2), 0.0, 0.5)
         
-        # 🌟 (중요) Rotated Grid에서는 가장 짧은 CNOT 연결 거리가 2입니다.
         # 따라서 총 최소 거리는 (total_cnots * 2)가 됩니다.
         optimal_distance = total_cnots * 2
         distance_penalty = min(1.0, max(0, total_distance - optimal_distance) / (total_cnots * 2))
