@@ -8,52 +8,41 @@ from collections import deque
 import random
 from tqdm import tqdm
 
-# 🌟 1. 프로젝트 최상위 루트 경로를 절대 경로로 계산하여 파이썬 시스템 경로에 추가
-# 이 파일이 `train/trainer.py`에 위치하므로, 한 단계 위('..')가 프로젝트 루트가 됩니다.
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
-# 기존 강화학습 및 시뮬레이션 환경 임포트
 from envs.qec_env import QECEnv
-from agent.network import QECNet
-from agent.mcts import MCTS
+# 🌟 [수정] 기존 QECNet과 MCTS를 버리고, GFlowNet 모델을 불러옵니다.
+from agent.gflownet import QEC_GFlowNet
 from sim.stim_interface import StimEvaluator
-
-# 🌟 2. 새롭게 분리한 깔끔한 모듈들 임포트!
 from train.module.reward_calculator import calculate_qec_reward
 from utils.experiment_logger import ExperimentLogger
 
-class AlphaZeroTrainer:
+class GFlowNetTrainer:
     def __init__(self, seed):
         self.seed = seed
-        
-        # 🌟 3. 모든 파일 저장, 로깅, 시각화 출력을 전담하는 로거 객체 생성
         self.logger = ExperimentLogger(PROJECT_ROOT, seed)
         
         self.best_cnots = -1
         self.best_distance = -1
         
-        # Surface Code [9,1,3] 테스트 환경
         self.num_qubits = 9
         self.num_stabilizers = 4
         self.episodes = 200           
         self.epochs = 100              
-        self.mcts_simulations = 200   
         self.batch_size = 32          
         
-        # 🌟 1. 채점관(evaluator)을 "먼저" 고용합니다.
         self.evaluator = StimEvaluator(num_qubits=self.num_qubits, noise_rate_x=0.01, noise_rate_z=0.01)
-        
-        # 🌟 2. 고용된 채점관을 환경(env) 안에 파견(주입) 보냅니다.
         self.env = QECEnv(num_qubits=self.num_qubits, num_stabilizers=self.num_stabilizers, evaluator=self.evaluator)
         
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.network = QECNet(self.num_qubits, self.num_stabilizers).to(self.device)
+        # 🌟 [수정] 신경망 교체
+        self.network = QEC_GFlowNet(self.num_qubits, self.num_stabilizers).to(self.device)
         
         self.optimizer = optim.AdamW(
             self.network.parameters(), 
-            lr=0.01, 
+            lr=0.005, # GFlowNet은 학습률을 약간 낮추는 것이 안정적입니다.
             weight_decay=1e-4
         )
         
@@ -61,7 +50,8 @@ class AlphaZeroTrainer:
             self.optimizer, T_0=25, T_mult=1, eta_min=1e-4
         )
         
-        self.memory = deque(maxlen=10000)
+        # 🌟 [수정] 메모리에는 이제 턴(Turn) 단위가 아니라 '하나의 완벽한 궤적(Trajectory)' 전체를 담습니다.
+        self.memory = deque(maxlen=2000) 
         
         self.best_logical_error = 1.0 
         self.best_Hx = None
@@ -69,118 +59,129 @@ class AlphaZeroTrainer:
 
     def execute_episode(self, current_epoch, current_ep):
         state, info = self.env.reset()
-        episode_memory = []
+        trajectory = []
         
+        # 🌟 MCTS 없이 초고속으로 전진(Forward Sampling)합니다!
         while True:
-            if np.sum(info['action_mask']) == 0:
-                break
+            mask = info['action_mask']
             
-            mcts = MCTS(self.network, self.env, num_simulations=self.mcts_simulations)
-            action_probs = mcts.search(state)
+            # 1. 신경망에 상태를 넣고 확률 분포(P_F)를 얻습니다. (기울기 계산 금지)
+            with torch.no_grad():
+                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+                logits = self.network(state_tensor).squeeze(0)
+                
+                # 마스킹된 불가능한 행동은 확률을 0(-inf)으로 만듭니다.
+                mask_tensor = torch.FloatTensor(mask).to(self.device)
+                logits = logits.masked_fill(mask_tensor == 0, -1e9)
+                probs = F.softmax(logits, dim=0)
             
-            episode_memory.append([state.copy(), action_probs, info['action_mask']])
+            # 2. 확률 분포에 따라 행동을 랜덤 샘플링합니다! (GFlowNet의 핵심: 탐색의 다양성)
+            action = torch.multinomial(probs, 1).item()
             
-            action = np.random.choice(len(action_probs), p=action_probs)
-            state, step_reward, terminated, truncated, info = self.env.step(action)
+            # 3. 환경 진행 및 역방향 확률(P_B) 획득
+            next_state, reward, terminated, truncated, next_info = self.env.step(action)
+            P_B = self.env.get_uniform_backward_prob()
+            
+            # 4. 궤적 기록 (Loss 계산 시 기울기를 다시 구하기 위해 상태와 액션만 저장)
+            trajectory.append({
+                'state': state.copy(),
+                'action': action,
+                'mask': mask.copy(),
+                'log_PB': np.log(P_B + 1e-8)
+            })
+            
+            state = next_state
+            info = next_info
             
             if terminated or truncated:
                 break
                 
+        # 🌟 에피소드 종료 후, 우리가 개조한 reward_calculator로 0보다 큰 양수 보상(R) 획득
         Hx, Hz = state[0], state[1]
-        steps = len(episode_memory) 
-        
-        # 🌟 4. 분리된 보상 계산기 호출! (복잡한 100줄의 로직이 단 한 줄로 압축)
         reward_result = calculate_qec_reward(Hx, Hz, self.num_qubits, self.num_stabilizers, self.evaluator)
+        final_reward_R = reward_result["final_value"] # 지수 함수가 적용된 양수값!
         
-        final_value = reward_result["final_value"]
-        
-        # 유효한 코드가 나왔을 때만 로그 출력 및 신기록 검사
+        # 로깅 및 신기록 저장 로직 (기존과 동일)
         if reward_result["is_valid"]:
             err_01 = reward_result["err_01"]
             total_cnots = reward_result["cnots"]
-            total_distance = reward_result["distance"]
             
-            self.logger.info(f"💎 [HW최적화] CNOT: {total_cnots} | 배선 거리: {total_distance} | Willow급 에러율: {reward_result['err_001']:.5f}")
-            self.logger.info(f"✨ [기적의 코드] {steps}턴 진행! 종합 가치: {final_value:.2f} (에러율 1%기준: {err_01:.4f})")
-            
-            # 신기록 저장 로직
             if err_01 < self.best_logical_error and err_01 < 0.1:
                 self.best_logical_error = err_01
                 self.best_Hx = Hx.copy()
                 self.best_Hz = Hz.copy()
-                self.best_cnots = total_cnots
-                self.best_distance = total_distance
-                
-                self.logger.info(f"🏆 [신기록 달성] 에러율(1%기준): {err_01:.4f} (위치: Epoch {current_epoch+1}, Ep {current_ep+1})")
-                
-                # 시각화 및 numpy 행렬 자동 저장 (로거에 위임)
+                self.logger.info(f"🏆 [신기록 달성] 에러율: {err_01:.4f} (에포크 {current_epoch+1})")
                 self.logger.save_best_code(current_epoch + 1, current_ep + 1, Hx, Hz, self.evaluator)
         
-        # 메모리에 이번 에피소드의 최종 가치(Value) 저장
-        for step_data in episode_memory:
-            step_data.append(final_value)
-            
-        return episode_memory
+        # 메모리에 '완성된 궤적 1개'와 '최종 보상 R'을 통째로 저장
+        self.memory.append((trajectory, final_reward_R))
+        return len(trajectory)
 
     def train_network(self):
         if len(self.memory) < self.batch_size: return None
         mini_batch = random.sample(self.memory, self.batch_size)
         
-        states = torch.FloatTensor(np.array([data[0] for data in mini_batch])).to(self.device)
-        target_probs = torch.FloatTensor(np.array([data[1] for data in mini_batch])).to(self.device)
-        masks = torch.FloatTensor(np.array([data[2] for data in mini_batch])).to(self.device)
-        target_values = torch.FloatTensor(np.array([data[3] for data in mini_batch])).unsqueeze(1).to(self.device)
-        
         self.optimizer.zero_grad()
-        pred_probs, pred_values = self.network(states, masks)
         
-        value_loss = F.mse_loss(pred_values, target_values)
-        policy_loss = -torch.sum(target_probs * torch.log(pred_probs + 1e-8)) / self.batch_size
+        # 🌟 GFlowNet의 특별한 파라미터 (전체 분배 함수)
+        logZ = self.network.logZ 
         
-        total_loss = total_loss = value_loss + 2.0 * policy_loss
-        
+        tb_losses = []
+        for trajectory, R in mini_batch:
+            sum_log_PF = 0.0
+            sum_log_PB = 0.0
+            
+            # 궤적을 처음부터 끝까지 다시 따라가며 현재 신경망의 P_F 확률(기울기 포함)을 누적합니다.
+            for step in trajectory:
+                state_t = torch.FloatTensor(step['state']).unsqueeze(0).to(self.device)
+                mask_t = torch.FloatTensor(step['mask']).to(self.device)
+                
+                logits = self.network(state_t).squeeze(0)
+                logits = logits.masked_fill(mask_t == 0, -1e9)
+                log_probs = F.log_softmax(logits, dim=0)
+                
+                sum_log_PF = sum_log_PF + log_probs[step['action']]
+                sum_log_PB = sum_log_PB + step['log_PB']
+                
+            # 최종 보상 R의 로그값
+            log_R = torch.log(torch.tensor(R, dtype=torch.float32).to(self.device) + 1e-8)
+            
+            # 🌟 [Trajectory Balance Loss 핵심 수식]
+            # (log Z + 총 Forward 확률 - 총 Backward 확률 - log R)^2
+            loss_i = (logZ + sum_log_PF - sum_log_PB - log_R) ** 2
+            tb_losses.append(loss_i)
+            
+        # 배치 평균 Loss 계산 및 역전파
+        total_loss = torch.stack(tb_losses).mean()
         total_loss.backward()
         self.optimizer.step()
         
-        return total_loss.item(), value_loss.item(), policy_loss.item()
+        # 기존 로깅 포맷을 맞추기 위해 3개 리턴 (Val, Pol은 더 이상 안 쓰므로 0.0 처리)
+        return total_loss.item(), 0.0, 0.0 
 
     def run(self):
-        self.logger.info(f"🚀 학습을 시작합니다! 장치: {self.device} (강력한 탐색 모드)")
+        self.logger.info(f"🚀 GFlowNet 학습을 시작합니다! 장치: {self.device} (생성형 탐색 모드)")
         
         for epoch in range(self.epochs):
             self.logger.info(f"=== Epoch {epoch+1}/{self.epochs} ===")
             
-            for ep in tqdm(range(self.episodes), desc="🎮 데이터 수집 (Self-Play)", leave=False, ncols=90, colour='green'):
-                episode_data = self.execute_episode(epoch, ep)
-                self.memory.extend(episode_data)
+            # 데이터 수집 (MCTS가 없으므로 눈 깜짝할 사이에 200 에피소드가 끝납니다)
+            for ep in tqdm(range(self.episodes), desc="🎮 궤적 샘플링", leave=False, ncols=90, colour='green'):
+                self.execute_episode(epoch, ep)
                 
+            # 신경망 학습
             losses = None
-            for _ in tqdm(range(100), desc="🧠 신경망 학습 (Training)", leave=False, ncols=90, colour='blue'): 
+            for _ in tqdm(range(100), desc="🧠 TB Loss 최적화", leave=False, ncols=90, colour='blue'): 
                 losses = self.train_network()
                 
             self.lr_scheduler.step()
                 
             if losses:
                 current_lr = self.optimizer.param_groups[0]['lr']
+                # GFlowNet에서는 TB Loss 하나만 봅니다. 이 값이 0에 가까워질수록 완벽해집니다!
+                self.logger.info(f"📈 Trajectory Balance Loss: {losses[0]:.4f} | logZ: {self.network.logZ.item():.4f} | LR: {current_lr:.6f}")
                 
-                loss_msg = (f"📈 Loss - Tot: {losses[0]:.4f} | Val: {losses[1]:.4f} | Pol: {losses[2]:.4f} | LR: {current_lr:.6f}")
-                self.logger.info(loss_msg)
-                
-                # CSV 기록 (로거에 위임)
-                self.logger.log_epoch_to_csv(epoch + 1, losses, self.best_logical_error, self.best_cnots, self.best_distance)
-            
-        # 🌟 5. 학습이 모두 끝난 후 저장 (로거에 위임)
+        # 최종 저장 로직 (기존과 동일)
         model_path = self.logger.save_model(self.network)
         self.logger.save_final_codes(self.best_Hx, self.best_Hz, self.evaluator)
-            
-        self.logger.info(f"🌟 [최종 결과] 가장 뛰어났던 코드가 'final_codes' 폴더에 정리되었습니다. (최종 에러율: {self.best_logical_error:.4f})")
-        
-        # 🌟 6. Break-even 달성 시 Sinter 정밀 검증 가동!
-        if self.best_logical_error < 0.01:
-            self.logger.info("🚀 [Break-Even 달성] 물리적 에러율(1%)의 한계를 돌파한 기적의 코드가 발견되었습니다!")
-            self.logger.info("🔥 Sinter를 사용한 Threshold 정밀 검증 및 그래프 생성을 시작합니다. (시간이 조금 걸릴 수 있습니다...)")
-            
-            # 로거의 Sinter 평가 함수 호출
-            self.logger.trigger_sinter_evaluation(self.best_Hx, self.best_Hz, self.evaluator)
-        
-        self.logger.info(f"🎉 학습 완료! 최고 에러율: {self.best_logical_error:.4f} \n저장 위치: {model_path}")
+        self.logger.info(f"🎉 GFlowNet 학습 완료! 최고 에러율: {self.best_logical_error:.4f}")

@@ -1,18 +1,29 @@
 import numpy as np
 
-def calculate_qec_reward(Hx, Hz, num_qubits, num_stabilizers, evaluator):
+def calculate_qec_reward(Hx, Hz, num_qubits, num_stabilizers, evaluator, beta=3.0):
     """
-    AI가 생성한 Hx, Hz 행렬을 평가하여 최종 가치(Value)와 각종 메타 데이터를 반환합니다.
+    GFlowNet을 위한 엄격한 양수(Strictly Positive) 보상 함수.
+    결함이 많을수록 0에 수렴하는 극소의 양수를, 완벽하면 1.0 이상의 큰 양수를 반환합니다.
     """
     dot_product = np.dot(Hx, Hz.T)
-    
     violations = np.sum((dot_product % 2) != 0)
+    
     orphaned_x = np.sum(np.sum(Hx, axis=0) == 0)
     orphaned_z = np.sum(np.sum(Hz, axis=0) == 0)
     total_orphans = orphaned_x + orphaned_z
     
+    overlap_X = np.dot(Hx, Hx.T)
+    np.fill_diagonal(overlap_X, 0)
+    girth4_X = np.sum(overlap_X >= 2) // 2 
+    
+    overlap_Z = np.dot(Hz, Hz.T)
+    np.fill_diagonal(overlap_Z, 0)
+    girth4_Z = np.sum(overlap_Z >= 2) // 2
+    
+    total_girth4_cycles = girth4_X + girth4_Z
+    
     result = {
-        "final_value": 0.0,
+        "final_value": 0.0, # 계산 후 반드시 0 초과의 양수로 덮어씌워짐
         "err_01": 1.0,
         "err_001": 1.0,
         "distance": -1,
@@ -22,50 +33,24 @@ def calculate_qec_reward(Hx, Hz, num_qubits, num_stabilizers, evaluator):
         "is_valid": False
     }
 
-    # 🌟 [NEW] Girth-4 (짧은 순환 고리) 탐지 연산
-    # Hx 내적: 서로 다른 X 안정자가 몇 개의 데이터 큐비트를 공유하는지 계산
-    overlap_X = np.dot(Hx, Hx.T)
-    np.fill_diagonal(overlap_X, 0) # 자기 자신과의 공유는 무시
-    # 2개 이상의 큐비트를 공유한다면 Girth-4 사이클이 존재한다는 뜻 (대칭행렬이므로 2로 나눔)
-    girth4_X = np.sum(overlap_X >= 2) // 2 
+    # 🌟 1. 결함(Defect) 스코어 계산
+    # 각 결함의 치명도에 따라 가중치를 줍니다. (위반=2.0, 고아=0.5, Girth4=1.0)
+    defect_score = (violations * 2.0) + (total_orphans * 0.5) + (total_girth4_cycles * 1.0)
     
-    # Hz 내적: 서로 다른 Z 안정자가 몇 개의 데이터 큐비트를 공유하는지 계산
-    overlap_Z = np.dot(Hz, Hz.T)
-    np.fill_diagonal(overlap_Z, 0)
-    girth4_Z = np.sum(overlap_Z >= 2) // 2
-    
-    total_girth4_cycles = girth4_X + girth4_Z
-
-    # 교환 법칙 위반, 고아 큐비트, 또는 Girth-4 사이클이 하나라도 있으면 패널티 부과!
-    if violations > 0 or total_orphans > 0 or total_girth4_cycles > 0:
-        
-        # 1. 교환 법칙 위반 패널티 (-0.2 per violation)
-        violation_penalty = -0.2 * violations
-        
-        # 2. 고아 큐비트 패널티 (-0.05 per orphan)
-        orphan_penalty = -0.05 * total_orphans
-        
-        # 3. 🌟 Girth-4 사이클 패널티 (-0.2 per cycle)
-        # 겹치는 선이 많을수록 에러가 증폭되므로 강력한 철퇴를 내립니다.
-        girth4_penalty = -0.2 * total_girth4_cycles
-        
-        # 4. 최종 패널티 합산 (안정성을 위해 최하점은 -1.0으로 방어)
-        total_penalty = violation_penalty + orphan_penalty + girth4_penalty
-        total_penalty = max(total_penalty, -1.0)
-        
-        result["final_value"] = total_penalty
-        
+    if defect_score > 0:
+        # 🌟 2. 지수 감쇠(Exponential Decay) 적용
+        # 결함이 1개라도 있으면 보상은 1.0 미만으로 뚝 떨어집니다.
+        # 예: defect_score가 2.0이면, np.exp(-6.0) ≈ 0.0024 (매우 작은 양수)
+        result["final_value"] = float(np.exp(-beta * defect_score))
         return result
-
+        
     # =====================================================================
-    # 위반(Violation)이 0개이고, 고아도 0개이며, Girth-4 사이클도 없는 
-    # 완벽한 코드를 찾았을 때만 아래의 '논리적 에러율(Sinter) 평가'를 진행합니다.
+    # 🌟 3. 완벽한 코드 (결함 0개) 발견 시 잭팟 보상 부여
     # =====================================================================
-
     result["is_valid"] = True
-    base_validity_reward = 0.5 
+    base_validity_reward = 1.0  # 결함이 0개일 때의 기본값 (e^0 = 1.0)
     
-    # 에러율 평가 (가장 시간이 오래 걸리는 병목 구간이므로, 완벽한 코드일 때만 실행)
+    # 에러율 평가 (병목 구간이므로 정답일 때만 실행)
     err_01 = evaluator.evaluate_logical_error_rate(Hx, Hz, noise_rate_x=0.01, noise_rate_z=0.01)
     err_001 = evaluator.evaluate_logical_error_rate(Hx, Hz, noise_rate_x=0.001, noise_rate_z=0.001)
     err_05 = evaluator.evaluate_logical_error_rate(Hx, Hz, noise_rate_x=0.05, noise_rate_z=0.05)
@@ -75,27 +60,23 @@ def calculate_qec_reward(Hx, Hz, num_qubits, num_stabilizers, evaluator):
     
     total_cnots = np.sum(Hx) + np.sum(Hz)
     result["cnots"] = total_cnots
+    result["distance"] = total_cnots * 2
     
-    # 하드웨어 토폴로지 마스킹 덕분에 모든 선의 거리는 '2'로 고정됩니다. 
-    # 따라서 복잡한 좌표 계산 코드는 삭제하고, 단순 곱셈으로 대체합니다.
-    optimal_distance = total_cnots * 2
-    result["distance"] = optimal_distance
-    
-    # 방어력 점수 계산 로직
     if err_01 >= 1.0 or err_001 >= 1.0 or err_05 >= 1.0:
         result["final_value"] = base_validity_reward
     else:
+        # 방어력이 뛰어날수록 보상이 1.0을 뚫고 2.0, 2.5까지 올라갑니다!
         imp_01 = max(0, (0.01 - err_01) / 0.01)
         imp_001 = max(0, (0.001 - err_001) / 0.001)
         imp_05 = max(0, (0.05 - err_05) / 0.05)
         
-        defense_score = np.clip((imp_01 * 0.5) + (imp_001 * 0.3) + (imp_05 * 0.2), 0.0, 0.5)
+        defense_score = np.clip((imp_01 * 0.5) + (imp_001 * 0.3) + (imp_05 * 0.2), 0.0, 1.0)
         
-        # CNOT 개수가 적을수록(Sparsity) 좋은 하드웨어 점수를 줌
+        # CNOT 개수가 적을수록 추가 보상
         sparsity_penalty = total_cnots / (num_qubits * num_stabilizers * 2)
-        hw_score = ((1.0 - sparsity_penalty) * 0.5)
+        hw_score = (1.0 - sparsity_penalty) * 0.5
         
-        final_val = base_validity_reward + (defense_score * 0.5) + hw_score
-        result["final_value"] = np.clip(final_val, 0.0, 1.0)
+        final_val = base_validity_reward + defense_score + hw_score
+        result["final_value"] = float(final_val)
         
     return result
