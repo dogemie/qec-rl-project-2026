@@ -25,9 +25,6 @@ class QECEnv(gym.Env):
         self.max_weight = max_weight
         self.evaluator = evaluator
         
-        self.pairs = list(itertools.combinations(range(self.m), 2))
-        self.num_pairs = len(self.pairs)
-        
         self.observation_space = spaces.Box(
             low=0, high=1, shape=(2, self.m, self.n), dtype=np.int8
         )
@@ -63,49 +60,31 @@ class QECEnv(gym.Env):
         for y in range(grid_size):
             for x in range(grid_size):
                 dist = max(abs(x - center), abs(y - center))
-                
-                # 1. 데이터 큐비트는 모두 홀수(2n+1) 위치에
                 if x % 2 == 1 and y % 2 == 1:
                     data_coords.append((dist, y, x, x, -y))
-                    
-                # 2. 🌟 안정자 큐비트는 짝수(2n) 위치에 두되, '체스판 무늬'로 X와 Z를 번갈아 배치!
                 elif x % 2 == 0 and y % 2 == 0:
                     if (x // 2 + y // 2) % 2 == 0:
                         x_stab_coords.append((dist, y, x, x, -y))
                     else:
                         z_stab_coords.append((dist, y, x, x, -y))
                         
-        data_coords.sort()
-        x_stab_coords.sort()
-        z_stab_coords.sort()
-        
+        data_coords.sort(); x_stab_coords.sort(); z_stab_coords.sort()
         data_coords = [(x, y) for _, _, _, x, y in data_coords]
         x_stab_coords = [(x, y) for _, _, _, x, y in x_stab_coords]
         z_stab_coords = [(x, y) for _, _, _, x, y in z_stab_coords]
         
-        # 3. 마스크 할당
         for c in range(2):
-            # c=0은 X 안정자(체스판 검은칸), c=1은 Z 안정자(체스판 하얀칸)
             stab_list = x_stab_coords if c == 0 else z_stab_coords
-            
             for r in range(self.m):
-                if r < len(stab_list):
-                    sx, sy = stab_list[r]
-                else:
-                    continue
-                    
+                if r < len(stab_list): sx, sy = stab_list[r]
+                else: continue
                 for col in range(self.n):
-                    if col < len(data_coords):
-                        dx, dy = data_coords[col]
-                    else:
-                        continue
-                        
-                    # 물리적으로 인접한 거리 2일 때만 허용
+                    if col < len(data_coords): dx, dy = data_coords[col]
+                    else: continue
                     if abs(sx - dx) + abs(sy - dy) == 2:
                         mask[c, r, col] = 1
-                        
         return mask
-
+    
     def reset(self, seed=None, options=None):
         """
         에피소드 상태를 초기화합니다.
@@ -132,24 +111,20 @@ class QECEnv(gym.Env):
         Returns:
             tuple: (다음 상태, 보상, 종료 여부, 잘림 여부, 추가 정보)
         """
-        c = action // (self.num_pairs * self.n)
-        rem = action % (self.num_pairs * self.n)
-        pair_idx = rem // self.n
+        c = action // (self.m * self.n)
+        rem = action % (self.m * self.n)
+        r = rem // self.n
         col = rem % self.n
         
-        r1, r2 = self.pairs[pair_idx]
-        
-        # 이미 선을 그은 곳(1)을 AI가 또 선택했다면, 그 즉시 코드를 제출하고 에피소드를 끝냅니다.
-        if self.state[c, r1, col] == 1 and self.state[c, r2, col] == 1:
+        if self.state[c, r, col] == 1:
             terminated = True
             final_reward = self._get_final_reward()
             return self.state.copy(), final_reward, terminated, False, self._get_info()
+            
+        self.state[c, r, col] = 1
+        self.current_step += 1
         
-        self.state[c, r1, col] = 1
-        self.state[c, r2, col] = 1
-        self.current_step += 2
-        
-        reward = self._calculate_step_reward(c, r1, r2)
+        reward = self._calculate_step_reward(c, r)
         
         terminated = False
         truncated = False
@@ -159,14 +134,11 @@ class QECEnv(gym.Env):
             
         return self.state.copy(), reward, terminated, truncated, self._get_info()
 
-    def _calculate_step_reward(self, changed_c, r1, r2):
-        # 가중치 제한 초과 시 즉시 철퇴
-        if np.sum(self.state[changed_c, r1, :]) > self.max_weight or \
-           np.sum(self.state[changed_c, r2, :]) > self.max_weight:
+    def _calculate_step_reward(self, changed_c, changed_r):
+        row_weight = np.sum(self.state[changed_c, changed_r, :])
+        if row_weight > self.max_weight:
             return -1.0 
-            
-        # 🌟 한 번에 2개의 선을 그으므로 CNOT 세금도 2배(-0.02) 징수
-        return -0.02
+        return -0.01
 
     def get_valid_action_mask(self):
         """
@@ -178,31 +150,19 @@ class QECEnv(gym.Env):
         mask = np.zeros(self.action_space.n, dtype=np.int8)
         
         for action in range(self.action_space.n):
-            c = action // (self.num_pairs * self.n)
-            rem = action % (self.num_pairs * self.n)
-            pair_idx = rem // self.n
+            mask = np.zeros(self.action_space.n, dtype=np.int8)
+        for action in range(self.action_space.n):
+            c = action // (self.m * self.n)
+            rem = action % (self.m * self.n)
+            r = rem // self.n
             col = rem % self.n
-            r1, r2 = self.pairs[pair_idx]
             
-            # 1. 두 안정자 모두 하드웨어 토폴로지 상으로 연결 가능해야 함
-            if self.valid_topology_mask[c, r1, col] == 0 or self.valid_topology_mask[c, r2, col] == 0:
-                continue
-                
-            # 2. 이미 두 선이 모두 그어져 있다면 (Submit 버튼 활성화)
-            if self.state[c, r1, col] == 1 and self.state[c, r2, col] == 1:
+            if self.valid_topology_mask[c, r, col] == 0: continue
+            if self.state[c, r, col] == 1:
                 mask[action] = 1
                 continue
-                
-            # 3. 둘 중 하나라도 이미 그어져 있으면 꼬이므로 차단 (항상 쌍으로만 움직여야 함)
-            if self.state[c, r1, col] == 1 or self.state[c, r2, col] == 1:
-                continue
-                
-            # 4. 가중치 제한 초과 방지
-            if np.sum(self.state[c, r1, :]) >= self.max_weight or np.sum(self.state[c, r2, :]) >= self.max_weight:
-                continue
-                
+            if np.sum(self.state[c, r, :]) >= self.max_weight: continue
             mask[action] = 1
-            
         return mask
 
     def _get_info(self):
