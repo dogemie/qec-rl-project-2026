@@ -138,7 +138,9 @@ class QECEnv(gym.Env):
         row_weight = np.sum(self.state[changed_c, changed_r, :])
         if row_weight > self.max_weight:
             return -1.0 
-        return -0.01
+        cnot_tax = -0.01
+        tie_breaker = 0.001 * (self.max_weight - row_weight)
+        return cnot_tax + tie_breaker
 
     def get_valid_action_mask(self):
         """
