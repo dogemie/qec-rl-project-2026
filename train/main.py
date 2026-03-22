@@ -1,6 +1,6 @@
 """_summary_
-실행 방법 1 (시드 지정): python train.py --seed 42
-실행 방법 2 (시드 자동): python train.py
+실행 방법 1 (시드 지정): python train/main.py --seed 42
+실행 방법 2 (시드 자동): python train/main.py
 """
 
 import os
@@ -15,17 +15,17 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
-# 분리해 둔 모듈에서 클래스 임포트
-from train.module.trainer import AlphaZeroTrainer
+# 🌟 AlphaZeroTrainer 대신 새롭게 만든 GFlowNetTrainer를 임포트합니다.
+from train.module.trainer import GFlowNetTrainer
 from utils.helpers import set_seed
 
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="AlphaZero 기반 양자 오류 정정 코드 탐색기")
+    # 🌟 설명 문구를 GFlowNet 기반으로 변경
+    parser = argparse.ArgumentParser(description="GFlowNet 기반 양자 오류 정정(QEC) 생성형 탐색 프레임워크")
     parser.add_argument('--seed', type=int, default=None, help="실험의 완벽한 재현성을 위한 난수 시드값")
     args = parser.parse_args()
     
-    # 🌟 시드 중복 검사를 위해 PROJECT_ROOT 기준 outputs 폴더 뒤지기
+    # 시드 중복 검사를 위해 PROJECT_ROOT 기준 outputs 폴더 뒤지기
     outputs_dir = os.path.join(PROJECT_ROOT, "outputs")
     used_seeds = set()
     
@@ -50,5 +50,6 @@ if __name__ == "__main__":
     
     set_seed(final_seed)
     
-    trainer = AlphaZeroTrainer(seed=final_seed)
+    # 🌟 GFlowNetTrainer 객체 생성 및 실행
+    trainer = GFlowNetTrainer(seed=final_seed)
     trainer.run()

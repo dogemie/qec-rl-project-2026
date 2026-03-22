@@ -24,7 +24,7 @@ class QEC_GFlowNet(nn.Module):
         # 🌟 3. Forward Policy (P_F) 출력층
         # Value(승률)를 출력하는 층은 완전히 삭제되었습니다!
         # 오직 "어느 위치에 선을 그을 것인가?" 에 대한 로짓(Logit)만 출력합니다.
-        action_space_size = 2 * self.m * self.n
+        action_space_size = (2 * self.m * self.n) + 1
         self.policy_head = nn.Linear(256, action_space_size)
 
     def forward(self, state):
