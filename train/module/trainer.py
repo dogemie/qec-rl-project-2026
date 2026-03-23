@@ -115,8 +115,16 @@ class GFlowNetTrainer:
         
         # 메모리에 '완성된 궤적 1개'와 '최종 보상 R'을 통째로 저장
         self.memory.append((trajectory, final_reward_R))
-        return len(trajectory)
-
+        
+        # 🌟 [수정] 단순 길이 반환이 아니라, 로깅을 위한 상세 성적표 반환!
+        return {
+            "reward": final_reward_R,
+            "violations": reward_result["violations"],
+            "orphans": reward_result["orphans"],
+            "steps": len(trajectory),
+            "is_valid": reward_result["is_valid"]
+        }
+        
     def train_network(self):
         if len(self.memory) < self.batch_size: return None
         mini_batch = random.sample(self.memory, self.batch_size)
@@ -165,9 +173,28 @@ class GFlowNetTrainer:
         for epoch in range(self.epochs):
             self.logger.info(f"=== Epoch {epoch+1}/{self.epochs} ===")
             
-            # 데이터 수집 (MCTS가 없으므로 눈 깜짝할 사이에 200 에피소드가 끝납니다)
+            # 🌟 [수정] 200판 동안의 성적을 기록할 장부 준비
+            stats = {"reward": [], "violations": [], "orphans": [], "steps": [], "valid_count": 0}
+            
+            # 데이터 수집 
             for ep in tqdm(range(self.episodes), desc="🎮 궤적 샘플링", leave=False, ncols=90, colour='green'):
-                self.execute_episode(epoch, ep)
+                ep_result = self.execute_episode(epoch, ep)
+                
+                # 장부에 기록
+                stats["reward"].append(ep_result["reward"])
+                stats["violations"].append(ep_result["violations"])
+                stats["orphans"].append(ep_result["orphans"])
+                stats["steps"].append(ep_result["steps"])
+                if ep_result["is_valid"]:
+                    stats["valid_count"] += 1
+                    
+            # 🌟 [수정] 200판 수집 완료 후, 에포크 요약 정보(계기판) 출력!
+            avg_v = np.mean(stats["violations"])
+            avg_o = np.mean(stats["orphans"])
+            avg_s = np.mean(stats["steps"])
+            max_r = np.max(stats["reward"])
+            
+            self.logger.info(f"📊 [상태] 평균 위반: {avg_v:.1f}개 | 고아: {avg_o:.1f}개 | 턴: {avg_s:.1f} | 최고보상: {max_r:.5f} | 정답: {stats['valid_count']}개")
                 
             # 신경망 학습
             losses = None
@@ -178,7 +205,6 @@ class GFlowNetTrainer:
                 
             if losses:
                 current_lr = self.optimizer.param_groups[0]['lr']
-                # GFlowNet에서는 TB Loss 하나만 봅니다. 이 값이 0에 가까워질수록 완벽해집니다!
                 self.logger.info(f"📈 Trajectory Balance Loss: {losses[0]:.4f} | logZ: {self.network.logZ.item():.4f} | LR: {current_lr:.6f}")
                 
         # 최종 저장 로직 (기존과 동일)
